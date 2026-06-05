@@ -1,14 +1,14 @@
 #include <Arduino.h>
 #include <Signal.h>
 
-Signal signal;
+Signal bus;
 
 enum class AppEvent : uint16_t {
 	Tick,
 };
 
 void printDiagnostics() {
-	SignalDiag diag = signal.getDiagnostics();
+	SignalDiag diag = bus.getDiagnostics();
 	Serial.printf("posted=%u\n", static_cast<unsigned>(diag.postedCount));
 	Serial.printf("dispatched=%u\n", static_cast<unsigned>(diag.dispatchedCount));
 	Serial.printf("dropped=%u\n", static_cast<unsigned>(diag.droppedCount));
@@ -21,14 +21,14 @@ void setup() {
 	Serial.begin(115200);
 	delay(200);
 
-	SignalResult initResult = signal.init();
+	SignalResult initResult = bus.init();
 	if (!initResult) {
 		Serial.println(initResult.message.c_str());
 		return;
 	}
 
-	signal.subscribe(AppEvent::Tick, []() {});
-	signal.post(AppEvent::Tick);
+	bus.subscribe(AppEvent::Tick, []() {});
+	bus.post(AppEvent::Tick);
 	delay(100);
 	printDiagnostics();
 }

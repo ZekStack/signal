@@ -1,7 +1,7 @@
 #include <Arduino.h>
 #include <Signal.h>
 
-Signal signal;
+Signal bus;
 
 enum class AppEvent : uint16_t {
 	Configured,
@@ -24,17 +24,17 @@ void setup() {
 	config.defaultPostTimeoutMs = 0;
 	config.taskName = "signal-task";
 
-	SignalResult initResult = signal.init(config);
+	SignalResult initResult = bus.init(config);
 	if (!initResult) {
 		Serial.println(initResult.message.c_str());
 		return;
 	}
 
-	signal.subscribe(AppEvent::Configured, []() {
+	bus.subscribe(AppEvent::Configured, []() {
 		Serial.println("configured signal bus is running");
 	});
 
-	signal.post(AppEvent::Configured);
+	bus.post(AppEvent::Configured);
 }
 
 void loop() {

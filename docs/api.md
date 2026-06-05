@@ -16,7 +16,7 @@ Event IDs may be enum or integral values that fit in `uint32_t`.
 `SignalSubResult` extends `SignalResult` with a subscription ID.
 
 ```cpp
-SignalSubResult result = signal.subscribe(AppEvent::Booted, []() {});
+SignalSubResult result = bus.subscribe(AppEvent::Booted, []() {});
 if (!result) {
 	Serial.println(result.message.c_str());
 }
@@ -68,7 +68,7 @@ Calling `waitFor()` from the internal Signal task returns `InvalidArgument`.
 ## Diagnostics
 
 ```cpp
-SignalDiag diag = signal.getDiagnostics();
+SignalDiag diag = bus.getDiagnostics();
 ```
 
 Diagnostics include posted, dispatched, dropped, queue usage, subscription count, waiter count, dispatch errors, and task stack high-water mark.

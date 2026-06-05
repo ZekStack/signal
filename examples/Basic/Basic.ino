@@ -1,7 +1,7 @@
 #include <Arduino.h>
 #include <Signal.h>
 
-Signal signal;
+Signal bus;
 
 enum class AppEvent : uint16_t {
 	Booted,
@@ -11,17 +11,17 @@ void setup() {
 	Serial.begin(115200);
 	delay(200);
 
-	SignalResult initResult = signal.init();
+	SignalResult initResult = bus.init();
 	if (!initResult) {
 		Serial.println(initResult.message.c_str());
 		return;
 	}
 
-	signal.subscribe(AppEvent::Booted, []() {
+	bus.subscribe(AppEvent::Booted, []() {
 		Serial.println("boot event received");
 	});
 
-	signal.post(AppEvent::Booted);
+	bus.post(AppEvent::Booted);
 }
 
 void loop() {

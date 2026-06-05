@@ -1,7 +1,7 @@
 #include <Arduino.h>
 #include <Signal.h>
 
-Signal signal;
+Signal bus;
 
 enum class AppEvent : uint16_t {
 	Reading,
@@ -17,13 +17,13 @@ void setup() {
 	Serial.begin(115200);
 	delay(200);
 
-	SignalResult initResult = signal.init();
+	SignalResult initResult = bus.init();
 	if (!initResult) {
 		Serial.println(initResult.message.c_str());
 		return;
 	}
 
-	signal.subscribe<SensorReading>(AppEvent::Reading, [](const SensorReading &reading) {
+	bus.subscribe<SensorReading>(AppEvent::Reading, [](const SensorReading &reading) {
 		Serial.printf(
 		    "reading seq=%u source=%s temperature=%.2f\n",
 		    static_cast<unsigned>(reading.sequence),
@@ -37,7 +37,7 @@ void setup() {
 	reading.temperature = 23.5f;
 	snprintf(reading.source, sizeof(reading.source), "kitchen");
 
-	signal.post(AppEvent::Reading, reading);
+	bus.post(AppEvent::Reading, reading);
 }
 
 void loop() {

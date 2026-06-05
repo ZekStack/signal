@@ -1,14 +1,14 @@
 #include <Arduino.h>
 #include <Signal.h>
 
-Signal signal;
+Signal bus;
 
 enum class AppEvent : uint16_t {
 	Ready,
 };
 
 void waiterTask(void *) {
-	SignalResult result = signal.waitFor(AppEvent::Ready, 5000);
+	SignalResult result = bus.waitFor(AppEvent::Ready, 5000);
 	if (result) {
 		Serial.println("waiter received Ready");
 	} else {
@@ -21,7 +21,7 @@ void setup() {
 	Serial.begin(115200);
 	delay(200);
 
-	SignalResult initResult = signal.init();
+	SignalResult initResult = bus.init();
 	if (!initResult) {
 		Serial.println(initResult.message.c_str());
 		return;
@@ -29,7 +29,7 @@ void setup() {
 
 	xTaskCreate(waiterTask, "signal-waiter", 4096, nullptr, 1, nullptr);
 	delay(250);
-	signal.post(AppEvent::Ready);
+	bus.post(AppEvent::Ready);
 }
 
 void loop() {

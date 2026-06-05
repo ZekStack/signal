@@ -2,7 +2,7 @@
 #include <Signal.h>
 #include <functional>
 
-Signal signal;
+Signal bus;
 
 enum class AppEvent : uint16_t {
 	ButtonPressed,
@@ -25,20 +25,20 @@ class ButtonHandler {
 	Signal &_bus;
 };
 
-ButtonHandler handler(signal);
+ButtonHandler handler(bus);
 
 void setup() {
 	Serial.begin(115200);
 	delay(200);
 
-	SignalResult initResult = signal.init();
+	SignalResult initResult = bus.init();
 	if (!initResult) {
 		Serial.println(initResult.message.c_str());
 		return;
 	}
 
 	handler.begin();
-	signal.post(AppEvent::ButtonPressed);
+	bus.post(AppEvent::ButtonPressed);
 }
 
 void loop() {

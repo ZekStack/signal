@@ -1,7 +1,7 @@
 #include <Arduino.h>
 #include <Signal.h>
 
-Signal signal;
+Signal bus;
 
 enum class AppEvent : uint16_t {
 	Ping,
@@ -11,24 +11,24 @@ void setup() {
 	Serial.begin(115200);
 	delay(200);
 
-	SignalResult initResult = signal.init();
+	SignalResult initResult = bus.init();
 	if (!initResult) {
 		Serial.println(initResult.message.c_str());
 		return;
 	}
 
-	SignalSubResult sub = signal.subscribe(AppEvent::Ping, []() {
+	SignalSubResult sub = bus.subscribe(AppEvent::Ping, []() {
 		Serial.println("this should only print before unsubscribe");
 	});
 
-	signal.post(AppEvent::Ping);
+	bus.post(AppEvent::Ping);
 	delay(100);
 
 	if (sub) {
-		signal.unsubscribe(sub.id);
+		bus.unsubscribe(sub.id);
 	}
 
-	signal.post(AppEvent::Ping);
+	bus.post(AppEvent::Ping);
 }
 
 void loop() {

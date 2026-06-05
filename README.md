@@ -51,7 +51,7 @@ Arduino/libraries/Signal
 #include <Arduino.h>
 #include <Signal.h>
 
-Signal signal;
+Signal bus;
 
 enum class AppEvent : uint16_t {
 	Booted,
@@ -60,17 +60,17 @@ enum class AppEvent : uint16_t {
 void setup() {
 	Serial.begin(115200);
 
-	SignalResult initResult = signal.init();
+	SignalResult initResult = bus.init();
 	if (!initResult) {
 		Serial.println(initResult.message.c_str());
 		return;
 	}
 
-	signal.subscribe(AppEvent::Booted, []() {
+	bus.subscribe(AppEvent::Booted, []() {
 		Serial.println("boot event received");
 	});
 
-	signal.post(AppEvent::Booted);
+	bus.post(AppEvent::Booted);
 }
 
 void loop() {
@@ -124,16 +124,16 @@ Detailed documentation is available in the `docs/` folder.
 ## API overview
 
 ```cpp
-Signal signal;
-signal.init();
+Signal bus;
+bus.init();
 
-SignalSubResult sub = signal.subscribe(AppEvent::Booted, []() {});
-signal.unsubscribe(sub.id);
+SignalSubResult sub = bus.subscribe(AppEvent::Booted, []() {});
+bus.unsubscribe(sub.id);
 
-signal.post(AppEvent::Booted);
-signal.postWithTimeout(AppEvent::Booted, 100);
+bus.post(AppEvent::Booted);
+bus.postWithTimeout(AppEvent::Booted, 100);
 
-SignalDiag diag = signal.getDiagnostics();
+SignalDiag diag = bus.getDiagnostics();
 ```
 
 For the full API, see [`docs/api.md`](docs/api.md).

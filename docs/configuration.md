@@ -16,7 +16,7 @@ config.overflowPolicy = SignalOverflowPolicy::DropNewest;
 config.defaultPostTimeoutMs = 0;
 config.taskName = "signal-task";
 
-signal.init(config);
+bus.init(config);
 ```
 
 ## Queue Limits

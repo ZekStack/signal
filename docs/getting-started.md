@@ -23,7 +23,7 @@ Arduino IDE users can install the repository into `Arduino/libraries/Signal`.
 ```cpp
 #include <Signal.h>
 
-Signal signal;
+Signal bus;
 
 enum class AppEvent : uint16_t {
 	Booted,
@@ -34,7 +34,7 @@ enum class AppEvent : uint16_t {
 ## Initialize
 
 ```cpp
-SignalResult result = signal.init();
+SignalResult result = bus.init();
 if (!result) {
 	Serial.println(result.message.c_str());
 	return;
@@ -44,11 +44,11 @@ if (!result) {
 ## Subscribe and post
 
 ```cpp
-signal.subscribe(AppEvent::Booted, []() {
+bus.subscribe(AppEvent::Booted, []() {
 	Serial.println("booted");
 });
 
-signal.post(AppEvent::Booted);
+bus.post(AppEvent::Booted);
 ```
 
 `post()` only queues the event. The callback runs later from the internal Signal task.
@@ -61,14 +61,14 @@ struct Reading {
 	uint32_t sequence = 0;
 };
 
-signal.subscribe<Reading>(AppEvent::Reading, [](const Reading &reading) {
+bus.subscribe<Reading>(AppEvent::Reading, [](const Reading &reading) {
 	Serial.printf("temperature=%.2f\n", reading.temperature);
 });
 
 Reading reading;
 reading.temperature = 23.5f;
 reading.sequence = 1;
-signal.post(AppEvent::Reading, reading);
+bus.post(AppEvent::Reading, reading);
 ```
 
 Payloads must be trivially copyable and must fit in `SignalConfig::maxPayloadSize`.
