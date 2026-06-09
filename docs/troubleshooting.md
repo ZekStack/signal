@@ -28,6 +28,10 @@ All subscriber callbacks run from the internal Signal task. Long callbacks delay
 
 Do not call `end()` or destroy the `Signal` instance from a Signal callback. The destructor has a last-resort guard to avoid freeing memory still used by the Signal task, but that lifecycle pattern is unsupported.
 
+## `end()` times out
+
+Queued callbacks or waiter tasks may still be draining. Internal storage remains allocated after a timeout so active waiters do not read freed memory.
+
 ## Handle subscription disappears immediately
 
 `subscribeHandle()` returns a scoped handle. Store it for as long as the subscription should remain active. A temporary handle is destroyed at the end of the statement and unsubscribes immediately.

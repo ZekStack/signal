@@ -784,7 +784,7 @@ SignalResult Signal::end(uint32_t timeoutMs) {
 	while (true) {
 		{
 			SignalLock lock(_impl->mutex);
-			if (lock && _impl->taskHandle == nullptr) {
+			if (lock && _impl->taskHandle == nullptr && _impl->activeWaiterCount == 0) {
 				_impl->cleanupStorage();
 				_impl->initialized = false;
 				_impl->stopping = false;

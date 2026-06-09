@@ -33,7 +33,9 @@ SignalResult init(const SignalConfig &config = SignalConfig());
 SignalResult end(uint32_t timeoutMs = 5000);
 ```
 
-`end()` stops accepting new posts, wakes current waiters with failure, drains queued events, and stops the dispatch task.
+`end()` stops accepting new posts, wakes current waiters with failure, drains queued events, stops the dispatch task, waits for active waiters to release their slots, and then frees internal storage.
+
+If `end(timeoutMs)` times out, internal storage remains allocated and shutdown is still in progress.
 
 Calling `end()` from the internal Signal task returns `InvalidArgument`.
 
@@ -59,6 +61,8 @@ SignalResult unsubscribe(SignalSubscriptionId id);
 No-payload subscribers match no-payload posts. Payload subscribers match by event ID and exact payload size.
 
 Callbacks run from the internal Signal task. Keep callbacks short and avoid blocking forever.
+
+`unsubscribe()` prevents future dispatch matches. A callback already collected for the current dispatch may still run once.
 
 Signal has two callback paths:
 

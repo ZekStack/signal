@@ -31,6 +31,8 @@ Signal allocates queue slots, payload storage, dispatch storage, subscription re
 
 The bounded core guarantee applies to post, dispatch, wait registration, waiter completion, unsubscribe, diagnostics, and raw callback subscription after successful `init()`. Capturing lambda and `std::function` subscriptions may allocate during `subscribe()`.
 
+During shutdown, storage is freed only after the dispatch task has stopped and active waiters have released their slots. If `end(timeoutMs)` returns `Timeout`, shutdown remains in progress and storage stays allocated.
+
 ## Overflow Policies
 
 `DropNewest` rejects the new event when the queue is full.
