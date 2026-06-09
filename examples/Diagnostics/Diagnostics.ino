@@ -10,8 +10,10 @@ enum class AppEvent : uint16_t {
 void printDiagnostics() {
 	SignalDiag diag = bus.getDiagnostics();
 	Serial.printf("posted=%u\n", static_cast<unsigned>(diag.postedCount));
-	Serial.printf("dispatched=%u\n", static_cast<unsigned>(diag.dispatchedCount));
+	Serial.printf("processed=%u\n", static_cast<unsigned>(diag.processedEventCount));
+	Serial.printf("callbacks=%u\n", static_cast<unsigned>(diag.callbackInvokeCount));
 	Serial.printf("dropped=%u\n", static_cast<unsigned>(diag.droppedCount));
+	Serial.printf("rejected=%u\n", static_cast<unsigned>(diag.rejectedCount));
 	Serial.printf("queue=%u/%u\n", static_cast<unsigned>(diag.queueUsed), static_cast<unsigned>(diag.queueSize));
 	Serial.printf("subscriptions=%u\n", static_cast<unsigned>(diag.subscriptionCount));
 	Serial.printf("waiters=%u\n", static_cast<unsigned>(diag.waiterCount));
@@ -23,7 +25,7 @@ void setup() {
 
 	SignalResult initResult = bus.init();
 	if (!initResult) {
-		Serial.println(initResult.message.c_str());
+		Serial.println(initResult.message);
 		return;
 	}
 

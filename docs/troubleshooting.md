@@ -23,3 +23,11 @@ Increase `queueSize`, reduce producer rate, keep callbacks short, or choose a di
 ## Callback blocks other events
 
 All subscriber callbacks run from the internal Signal task. Long callbacks delay dispatch of later events.
+
+## Handle subscription disappears immediately
+
+`subscribeHandle()` returns a scoped handle. Store it for as long as the subscription should remain active. A temporary handle is destroyed at the end of the statement and unsubscribes immediately.
+
+## Need allocation-free subscriptions
+
+Use `subscribeRaw()` with a function pointer and context pointer. Lambda, `std::bind`, and `std::function` subscriptions are convenience APIs and may allocate during `subscribe()`.

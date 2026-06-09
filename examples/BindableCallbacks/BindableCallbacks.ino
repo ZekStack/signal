@@ -33,7 +33,7 @@ void setup() {
 
 	SignalResult initResult = bus.init();
 	if (!initResult) {
-		Serial.println(initResult.message.c_str());
+		Serial.println(initResult.message);
 		return;
 	}
 

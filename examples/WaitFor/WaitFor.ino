@@ -12,7 +12,7 @@ void waiterTask(void *) {
 	if (result) {
 		Serial.println("waiter received Ready");
 	} else {
-		Serial.println(result.message.c_str());
+		Serial.println(result.message);
 	}
 	vTaskDelete(nullptr);
 }
@@ -23,7 +23,7 @@ void setup() {
 
 	SignalResult initResult = bus.init();
 	if (!initResult) {
-		Serial.println(initResult.message.c_str());
+		Serial.println(initResult.message);
 		return;
 	}
 

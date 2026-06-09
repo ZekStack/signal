@@ -36,7 +36,7 @@ enum class AppEvent : uint16_t {
 ```cpp
 SignalResult result = bus.init();
 if (!result) {
-	Serial.println(result.message.c_str());
+	Serial.println(result.message);
 	return;
 }
 ```

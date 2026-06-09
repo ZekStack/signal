@@ -4,16 +4,18 @@
 #include <cstring>
 #include <functional>
 #include <memory>
-#include <string>
 #include <type_traits>
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
+namespace zek::signal {
+
 using SignalEventId = uint32_t;
 using SignalSubscriptionId = uint32_t;
 
 struct SignalImpl;
+class Signal;
 
 enum class SignalStatus : uint8_t {
 	Ok,
@@ -60,7 +62,7 @@ struct SignalConfig {
 struct SignalResult {
 	bool result = false;
 	SignalStatus status = SignalStatus::InternalError;
-	std::string message;
+	const char *message = "error";
 
 	explicit operator bool() const {
 		return result;
@@ -83,8 +85,11 @@ struct SignalSubResult : SignalResult {
 
 struct SignalDiag {
 	uint32_t postedCount = 0;
+	uint32_t processedEventCount = 0;
+	uint32_t callbackInvokeCount = 0;
 	uint32_t dispatchedCount = 0;
 	uint32_t droppedCount = 0;
+	uint32_t rejectedCount = 0;
 	size_t queueSize = 0;
 	size_t queueUsed = 0;
 	size_t subscriptionCount = 0;
@@ -96,6 +101,36 @@ struct SignalDiag {
 };
 
 using SignalCallback = std::function<void()>;
+using SignalRawCallback = void (*)(void *context);
+using SignalRawPayloadCallback = void (*)(void *context, const void *payload, size_t payloadSize);
+
+class SignalSubscriptionHandle {
+  public:
+	SignalSubscriptionHandle() = default;
+	SignalSubscriptionHandle(Signal *bus, SignalSubscriptionId id);
+	~SignalSubscriptionHandle();
+
+	SignalSubscriptionHandle(const SignalSubscriptionHandle &) = delete;
+	SignalSubscriptionHandle &operator=(const SignalSubscriptionHandle &) = delete;
+
+	SignalSubscriptionHandle(SignalSubscriptionHandle &&other) noexcept;
+	SignalSubscriptionHandle &operator=(SignalSubscriptionHandle &&other) noexcept;
+
+	explicit operator bool() const {
+		return _bus != nullptr && _id != 0;
+	}
+
+	SignalSubscriptionId id() const {
+		return _id;
+	}
+
+	SignalResult unsubscribe();
+	SignalSubscriptionId release();
+
+  private:
+	Signal *_bus = nullptr;
+	SignalSubscriptionId _id = 0;
+};
 
 namespace signal_detail {
 template <typename T>
@@ -131,6 +166,7 @@ class Signal {
 	SignalResult end(uint32_t timeoutMs = 5000);
 
 	SignalSubResult subscribe(SignalEventId eventId, SignalCallback callback);
+	SignalSubscriptionHandle subscribeHandle(SignalEventId eventId, SignalCallback callback);
 
 	template <
 	    typename Event,
@@ -140,6 +176,16 @@ class Signal {
 	        int> = 0>
 	SignalSubResult subscribe(Event event, SignalCallback callback) {
 		return subscribe(signal_detail::eventToId(event), callback);
+	}
+
+	template <
+	    typename Event,
+	    typename std::enable_if_t<
+	        signal_detail::IsSignalEventType<Event>::value &&
+	            !std::is_same_v<std::remove_cv_t<std::remove_reference_t<Event>>, SignalEventId>,
+	        int> = 0>
+	SignalSubscriptionHandle subscribeHandle(Event event, SignalCallback callback) {
+		return subscribeHandle(signal_detail::eventToId(event), callback);
 	}
 
 	template <typename Payload, typename Event, typename Callback>
@@ -159,7 +205,7 @@ class Signal {
 			);
 		}
 
-		return subscribeRaw(
+		return subscribeFunction(
 		    signal_detail::eventToId(event),
 		    sizeof(PayloadType),
 		    [typedCallback](const void *data, size_t size) {
@@ -171,6 +217,63 @@ class Signal {
 			    typedCallback(payload);
 		    }
 		);
+	}
+
+	template <typename Payload, typename Event, typename Callback>
+	SignalSubscriptionHandle subscribeHandle(Event event, Callback callback) {
+		SignalSubResult result = subscribe<Payload>(event, callback);
+		if (!result) {
+			return SignalSubscriptionHandle();
+		}
+		return SignalSubscriptionHandle(this, result.id);
+	}
+
+	SignalSubResult subscribeRaw(
+	    SignalEventId eventId,
+	    SignalRawCallback callback,
+	    void *context = nullptr
+	);
+	SignalSubResult subscribeRaw(
+	    SignalEventId eventId,
+	    size_t payloadSize,
+	    SignalRawPayloadCallback callback,
+	    void *context = nullptr
+	);
+	SignalSubscriptionHandle subscribeRawHandle(
+	    SignalEventId eventId,
+	    SignalRawCallback callback,
+	    void *context = nullptr
+	);
+	SignalSubscriptionHandle subscribeRawHandle(
+	    SignalEventId eventId,
+	    size_t payloadSize,
+	    SignalRawPayloadCallback callback,
+	    void *context = nullptr
+	);
+
+	template <
+	    typename Event,
+	    typename std::enable_if_t<
+	        signal_detail::IsSignalEventType<Event>::value &&
+	            !std::is_same_v<std::remove_cv_t<std::remove_reference_t<Event>>, SignalEventId>,
+	        int> = 0>
+	SignalSubResult subscribeRaw(Event event, SignalRawCallback callback, void *context = nullptr) {
+		return subscribeRaw(signal_detail::eventToId(event), callback, context);
+	}
+
+	template <
+	    typename Event,
+	    typename std::enable_if_t<
+	        signal_detail::IsSignalEventType<Event>::value &&
+	            !std::is_same_v<std::remove_cv_t<std::remove_reference_t<Event>>, SignalEventId>,
+	        int> = 0>
+	SignalSubResult subscribeRaw(
+	    Event event,
+	    size_t payloadSize,
+	    SignalRawPayloadCallback callback,
+	    void *context = nullptr
+	) {
+		return subscribeRaw(signal_detail::eventToId(event), payloadSize, callback, context);
 	}
 
 	SignalResult unsubscribe(SignalSubscriptionId id);
@@ -255,12 +358,12 @@ class Signal {
 	const char *statusToString(SignalStatus status) const;
 
   private:
-	using SignalRawCallback = std::function<void(const void *, size_t)>;
+	using SignalFunctionCallback = std::function<void(const void *, size_t)>;
 
-	SignalSubResult subscribeRaw(
+	SignalSubResult subscribeFunction(
 	    SignalEventId eventId,
 	    size_t payloadSize,
-	    SignalRawCallback callback
+	    SignalFunctionCallback callback
 	);
 	SignalResult postRaw(
 	    SignalEventId eventId,
@@ -278,3 +381,22 @@ class Signal {
 
 	std::unique_ptr<SignalImpl> _impl;
 };
+
+} // namespace zek::signal
+
+#ifndef ZEK_SIGNAL_DISABLE_GLOBAL_ALIASES
+using Signal = zek::signal::Signal;
+using SignalCallback = zek::signal::SignalCallback;
+using SignalConfig = zek::signal::SignalConfig;
+using SignalDiag = zek::signal::SignalDiag;
+using SignalEventId = zek::signal::SignalEventId;
+using SignalOverflowPolicy = zek::signal::SignalOverflowPolicy;
+using SignalRawCallback = zek::signal::SignalRawCallback;
+using SignalRawPayloadCallback = zek::signal::SignalRawPayloadCallback;
+using SignalResult = zek::signal::SignalResult;
+using SignalStackType = zek::signal::SignalStackType;
+using SignalStatus = zek::signal::SignalStatus;
+using SignalSubResult = zek::signal::SignalSubResult;
+using SignalSubscriptionHandle = zek::signal::SignalSubscriptionHandle;
+using SignalSubscriptionId = zek::signal::SignalSubscriptionId;
+#endif

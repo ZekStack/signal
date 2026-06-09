@@ -23,9 +23,13 @@ bus.init(config);
 
 `queueSize` is the maximum number of posted events waiting for dispatch. Each queue slot reserves up to `maxPayloadSize` bytes.
 
-`maxSubscriptions` limits active subscriptions. `unsubscribe()` frees a slot for later reuse.
+`maxSubscriptions` limits active subscriptions and the fixed dispatch-match capacity. `unsubscribe()` frees a slot for later reuse after active dispatch references drain.
 
 `maxWaiters` limits tasks blocked in `waitFor()`.
+
+Signal allocates queue slots, payload storage, dispatch storage, subscription records, waiter records, waiter semaphores, and the queue-space counting semaphore during `init()`. A failed `init()` rolls back partial storage so the object can be retried with a different config.
+
+The bounded core guarantee applies to post, dispatch, wait registration, waiter completion, unsubscribe, diagnostics, and raw callback subscription after successful `init()`. Capturing lambda and `std::function` subscriptions may allocate during `subscribe()`.
 
 ## Overflow Policies
 
@@ -33,7 +37,7 @@ bus.init(config);
 
 `DropOldest` discards the oldest queued event, then accepts the new one.
 
-`BlockCaller` waits for queue space up to the post timeout. `post()` uses `defaultPostTimeoutMs`; `postWithTimeout()` uses the supplied timeout.
+`BlockCaller` waits for queue space up to the post timeout. `post()` uses `defaultPostTimeoutMs`; `postWithTimeout()` uses the supplied timeout. Internally, queue space is tracked with a counting semaphore whose count matches free queue slots.
 
 ## Stack Behavior
 

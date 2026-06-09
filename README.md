@@ -11,7 +11,7 @@ Signal helps Arduino ESP32 applications decouple modules with typed events, boun
 ## Why use Signal?
 
 * **Typed events** - publish enum or integral event IDs with optional trivially copyable payloads.
-* **Bounded memory** - queue size, payload bytes, subscriptions, and waiters are configured up front.
+* **Bounded core** - queue storage, payload bytes, waiters, and raw callback subscriptions are configured up front.
 * **Task-side callbacks** - subscriber callbacks run from the internal Signal task.
 * **Future-only waits** - `waitFor()` wakes on future matching posts and does not consume subscriber events.
 * **Production-minded** - result-based errors, diagnostics, thread-safe internals, and no exceptions.
@@ -62,7 +62,7 @@ void setup() {
 
 	SignalResult initResult = bus.init();
 	if (!initResult) {
-		Serial.println(initResult.message.c_str());
+		Serial.println(initResult.message);
 		return;
 	}
 
@@ -85,6 +85,9 @@ void loop() {
 
 * Payloads must be trivially copyable and fit inside `maxPayloadSize`.
 * Do not put `std::string`, `std::vector`, heap pointers, references, or destructor-owned resources inside payloads.
+* Use `zek::signal::Signal` for namespaced code; global aliases such as `Signal` remain enabled by default for Arduino friendliness.
+* Raw function-pointer callbacks are the bounded callback path. Lambda, `std::bind`, and `std::function` subscriptions are convenience APIs and may allocate during `subscribe()`.
+* Do not call `end()` from a Signal callback.
 * `waitFor()` only waits for future posts; it does not read from a global event history.
 * A posted event wakes all matching waiters and is also delivered to subscribers.
 * Stack sizes are FreeRTOS byte sizes on ESP32 and must be at least 1024 bytes.
@@ -129,6 +132,10 @@ bus.init();
 
 SignalSubResult sub = bus.subscribe(AppEvent::Booted, []() {});
 bus.unsubscribe(sub.id);
+
+bus.subscribeRaw(AppEvent::Booted, [](void *) {
+	Serial.println("bounded raw callback");
+});
 
 bus.post(AppEvent::Booted);
 bus.postWithTimeout(AppEvent::Booted, 100);
