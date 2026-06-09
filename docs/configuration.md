@@ -25,7 +25,7 @@ bus.init(config);
 
 `maxSubscriptions` limits active subscriptions and the fixed dispatch-match capacity. `unsubscribe()` frees a slot for later reuse after active dispatch references drain.
 
-`maxWaiters` limits tasks blocked in `waitFor()`.
+`maxWaiters` limits tasks blocked in `waitFor()`. Set it to `0` to disable `waitFor()`; wait attempts then return `TooManyWaiters`.
 
 Signal allocates queue slots, payload storage, dispatch storage, subscription records, waiter records, waiter semaphores, and the queue-space counting semaphore during `init()`. A failed `init()` rolls back partial storage so the object can be retried with a different config.
 
@@ -37,7 +37,7 @@ The bounded core guarantee applies to post, dispatch, wait registration, waiter 
 
 `DropOldest` discards the oldest queued event, then accepts the new one.
 
-`BlockCaller` waits for queue space up to the post timeout. `post()` uses `defaultPostTimeoutMs`; `postWithTimeout()` uses the supplied timeout. Internally, queue space is tracked with a counting semaphore whose count matches free queue slots.
+`BlockCaller` waits for queue space up to the post timeout. `post()` uses `defaultPostTimeoutMs`; `postWithTimeout()` uses the supplied timeout. Internally, queue space is tracked with a counting semaphore whose tokens represent unreserved free queue slots.
 
 ## Stack Behavior
 

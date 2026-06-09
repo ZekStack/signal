@@ -87,7 +87,7 @@ void loop() {
 * Do not put `std::string`, `std::vector`, heap pointers, references, or destructor-owned resources inside payloads.
 * Use `zek::signal::Signal` for namespaced code; global aliases such as `Signal` remain enabled by default for Arduino friendliness.
 * Raw function-pointer callbacks are the bounded callback path. Lambda, `std::bind`, and `std::function` subscriptions are convenience APIs and may allocate during `subscribe()`.
-* Do not call `end()` from a Signal callback.
+* Do not call `end()` or destroy a `Signal` instance from a Signal callback.
 * `waitFor()` only waits for future posts; it does not read from a global event history.
 * A posted event wakes all matching waiters and is also delivered to subscribers.
 * Stack sizes are FreeRTOS byte sizes on ESP32 and must be at least 1024 bytes.
@@ -105,6 +105,7 @@ void loop() {
 | `Diagnostics` | Runtime counters and configured limits. |
 | `BindableCallbacks` | `std::bind` with private class methods. |
 | `Configuration` | Stack, queue, payload, subscription, and waiter limits. |
+| `Stress` | Compile-covered stress sketch for manual runtime concurrency checks. |
 
 Start with:
 

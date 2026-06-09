@@ -37,6 +37,8 @@ SignalResult end(uint32_t timeoutMs = 5000);
 
 Calling `end()` from the internal Signal task returns `InvalidArgument`.
 
+Destroying a `Signal` instance from one of its callbacks is unsupported. As a last-resort safety guard, the destructor avoids freeing the internal implementation when destruction happens from the Signal task.
+
 ## Subscribe
 
 ```cpp
@@ -50,6 +52,7 @@ SignalSubResult subscribeRaw(
     void *context = nullptr
 );
 SignalSubscriptionHandle subscribeHandle(Event event, SignalCallback callback);
+SignalSubscriptionHandle subscribeRawHandle(Event event, SignalRawCallback callback, void *context = nullptr);
 SignalResult unsubscribe(SignalSubscriptionId id);
 ```
 
@@ -85,6 +88,8 @@ SignalResult waitFor(Event event, Payload &out, uint32_t timeoutMs);
 `waitFor()` registers a future-only waiter. It does not inspect old events and does not consume subscriber delivery.
 
 Calling `waitFor()` from the internal Signal task returns `InvalidArgument`.
+
+If `SignalConfig::maxWaiters` is `0`, `waitFor()` is disabled and returns `TooManyWaiters`.
 
 ## Diagnostics
 

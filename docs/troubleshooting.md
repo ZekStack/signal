@@ -24,6 +24,10 @@ Increase `queueSize`, reduce producer rate, keep callbacks short, or choose a di
 
 All subscriber callbacks run from the internal Signal task. Long callbacks delay dispatch of later events.
 
+## Shutdown from callback
+
+Do not call `end()` or destroy the `Signal` instance from a Signal callback. The destructor has a last-resort guard to avoid freeing memory still used by the Signal task, but that lifecycle pattern is unsupported.
+
 ## Handle subscription disappears immediately
 
 `subscribeHandle()` returns a scoped handle. Store it for as long as the subscription should remain active. A temporary handle is destroyed at the end of the statement and unsubscribes immediately.

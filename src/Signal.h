@@ -276,6 +276,35 @@ class Signal {
 		return subscribeRaw(signal_detail::eventToId(event), payloadSize, callback, context);
 	}
 
+	template <
+	    typename Event,
+	    typename std::enable_if_t<
+	        signal_detail::IsSignalEventType<Event>::value &&
+	            !std::is_same_v<std::remove_cv_t<std::remove_reference_t<Event>>, SignalEventId>,
+	        int> = 0>
+	SignalSubscriptionHandle subscribeRawHandle(
+	    Event event,
+	    SignalRawCallback callback,
+	    void *context = nullptr
+	) {
+		return subscribeRawHandle(signal_detail::eventToId(event), callback, context);
+	}
+
+	template <
+	    typename Event,
+	    typename std::enable_if_t<
+	        signal_detail::IsSignalEventType<Event>::value &&
+	            !std::is_same_v<std::remove_cv_t<std::remove_reference_t<Event>>, SignalEventId>,
+	        int> = 0>
+	SignalSubscriptionHandle subscribeRawHandle(
+	    Event event,
+	    size_t payloadSize,
+	    SignalRawPayloadCallback callback,
+	    void *context = nullptr
+	) {
+		return subscribeRawHandle(signal_detail::eventToId(event), payloadSize, callback, context);
+	}
+
 	SignalResult unsubscribe(SignalSubscriptionId id);
 
 	SignalResult post(SignalEventId eventId);

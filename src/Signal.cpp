@@ -4,6 +4,7 @@
 #include "internal/SignalTaskSupport.h"
 
 #include <cstring>
+#include <limits>
 #include <new>
 
 #include <freertos/semphr.h>
@@ -414,7 +415,7 @@ struct SignalImpl {
 		if (!lock || !popLocked(event)) {
 			return false;
 		}
-		if (queueSpace != nullptr) {
+		if (config.overflowPolicy == SignalOverflowPolicy::BlockCaller && queueSpace != nullptr) {
 			xSemaphoreGive(queueSpace);
 		}
 		return true;
@@ -630,9 +631,14 @@ Signal::Signal() : _impl(new (std::nothrow) SignalImpl()) {
 }
 
 Signal::~Signal() {
-	if (_impl != nullptr) {
-		end(2000);
+	if (_impl == nullptr) {
+		return;
 	}
+	if (_impl->taskHandle != nullptr && xTaskGetCurrentTaskHandle() == _impl->taskHandle) {
+		_impl.release();
+		return;
+	}
+	end(portMAX_DELAY);
 }
 
 SignalResult Signal::init(const SignalConfig &config) {
@@ -655,6 +661,21 @@ SignalResult Signal::init(const SignalConfig &config) {
 		return SignalResult::failure(
 		    SignalStatus::InvalidArgument,
 		    "max subscriptions must be greater than zero"
+		);
+	}
+	if (
+	    config.maxPayloadSize > 0 &&
+	    config.queueSize > std::numeric_limits<size_t>::max() / config.maxPayloadSize
+	) {
+		return SignalResult::failure(
+		    SignalStatus::InvalidArgument,
+		    "queue payload storage size overflow"
+		);
+	}
+	if (config.queueSize > static_cast<size_t>(std::numeric_limits<UBaseType_t>::max())) {
+		return SignalResult::failure(
+		    SignalStatus::InvalidArgument,
+		    "queue size is too large for FreeRTOS semaphore"
 		);
 	}
 
@@ -1033,20 +1054,27 @@ SignalResult Signal::postRaw(
 		return SignalResult::failure(SignalStatus::InvalidArgument, "payload is required");
 	}
 
-	const uint32_t startedMs = millis();
 	uint32_t effectiveTimeout = timeoutMs;
+	SignalOverflowPolicy overflowPolicy = SignalOverflowPolicy::DropNewest;
 	{
 		SignalLock lock(_impl->mutex);
 		if (!lock) {
 			return SignalResult::failure(SignalStatus::InternalError, "failed to lock signal");
 		}
+		if (!_impl->initialized || _impl->stopping) {
+			_impl->rejectedCount++;
+			return SignalResult::failure(SignalStatus::NotInitialized, "signal is not initialized");
+		}
+		if (payloadSize > _impl->config.maxPayloadSize) {
+			_impl->rejectedCount++;
+			return SignalResult::failure(SignalStatus::InvalidArgument, "payload is too large");
+		}
 		effectiveTimeout = useDefaultTimeout ? _impl->config.defaultPostTimeoutMs : timeoutMs;
+		overflowPolicy = _impl->config.overflowPolicy;
 	}
 
-	while (true) {
+	if (overflowPolicy != SignalOverflowPolicy::BlockCaller) {
 		TaskHandle_t handle = nullptr;
-		bool shouldNotify = false;
-
 		{
 			SignalLock lock(_impl->mutex);
 			if (!lock) {
@@ -1060,100 +1088,15 @@ SignalResult Signal::postRaw(
 				_impl->rejectedCount++;
 				return SignalResult::failure(SignalStatus::InvalidArgument, "payload is too large");
 			}
-
-			if (_impl->queueCount < _impl->config.queueSize) {
-				if (_impl->queueSpace != nullptr &&
-				    xSemaphoreTake(_impl->queueSpace, 0) != pdTRUE) {
-					_impl->dispatchErrorCount++;
-					return SignalResult::failure(
-					    SignalStatus::InternalError,
-					    "signal queue space is inconsistent"
-					);
+			if (_impl->queueCount >= _impl->config.queueSize) {
+				if (_impl->config.overflowPolicy == SignalOverflowPolicy::DropNewest) {
+					_impl->droppedCount++;
+					_impl->rejectedCount++;
+					return SignalResult::failure(SignalStatus::QueueFull, "signal queue is full");
 				}
-				_impl->enqueueLocked(eventId, payloadSize, payload);
-				_impl->completeWaitersLocked(
-				    eventId,
-				    payloadSize,
-				    payload,
-				    SignalStatus::Ok,
-				    "signal event received"
-				);
-				_impl->postedCount++;
-				_impl->wakeTaskLocked(handle);
-				shouldNotify = true;
-			} else if (_impl->config.overflowPolicy == SignalOverflowPolicy::DropNewest) {
-				_impl->droppedCount++;
-				_impl->rejectedCount++;
-				return SignalResult::failure(SignalStatus::QueueFull, "signal queue is full");
-			} else if (_impl->config.overflowPolicy == SignalOverflowPolicy::DropOldest) {
 				_impl->queueHead = (_impl->queueHead + 1) % _impl->config.queueSize;
 				_impl->queueCount--;
 				_impl->droppedCount++;
-				_impl->enqueueLocked(eventId, payloadSize, payload);
-				_impl->completeWaitersLocked(
-				    eventId,
-				    payloadSize,
-				    payload,
-				    SignalStatus::Ok,
-				    "signal event received"
-				);
-				_impl->postedCount++;
-				_impl->wakeTaskLocked(handle);
-				shouldNotify = true;
-			} else if (effectiveTimeout == 0) {
-				_impl->droppedCount++;
-				_impl->rejectedCount++;
-				return SignalResult::failure(SignalStatus::Timeout, "signal queue is full");
-			}
-		}
-
-		if (shouldNotify) {
-			if (handle != nullptr) {
-				xTaskNotifyGive(handle);
-			}
-			return SignalResult::success("signal event queued");
-		}
-
-		if (timeoutElapsed(startedMs, effectiveTimeout)) {
-			SignalLock lock(_impl->mutex);
-			if (lock) {
-				_impl->droppedCount++;
-				_impl->rejectedCount++;
-			}
-			return SignalResult::failure(SignalStatus::Timeout, "signal queue is full");
-		}
-		const uint32_t elapsed = millis() - startedMs;
-		const uint32_t remaining =
-		    effectiveTimeout == portMAX_DELAY ? portMAX_DELAY : effectiveTimeout - elapsed;
-		if (_impl->queueSpace == nullptr ||
-		    xSemaphoreTake(_impl->queueSpace, timeoutToTicks(remaining)) != pdTRUE) {
-			SignalLock lock(_impl->mutex);
-			if (lock) {
-				_impl->droppedCount++;
-				_impl->rejectedCount++;
-			}
-			return SignalResult::failure(SignalStatus::Timeout, "signal queue is full");
-		}
-
-		{
-			SignalLock lock(_impl->mutex);
-			if (!lock) {
-				xSemaphoreGive(_impl->queueSpace);
-				return SignalResult::failure(SignalStatus::InternalError, "failed to lock signal");
-			}
-			if (!_impl->initialized || _impl->stopping) {
-				xSemaphoreGive(_impl->queueSpace);
-				_impl->rejectedCount++;
-				return SignalResult::failure(SignalStatus::NotInitialized, "signal is not initialized");
-			}
-			if (payloadSize > _impl->config.maxPayloadSize || _impl->queueCount >= _impl->config.queueSize) {
-				xSemaphoreGive(_impl->queueSpace);
-				if (timeoutElapsed(startedMs, effectiveTimeout)) {
-					_impl->droppedCount++;
-					_impl->rejectedCount++;
-					return SignalResult::failure(SignalStatus::Timeout, "signal queue is full");
-				}
-				continue;
 			}
 			_impl->enqueueLocked(eventId, payloadSize, payload);
 			_impl->completeWaitersLocked(
@@ -1171,6 +1114,65 @@ SignalResult Signal::postRaw(
 		}
 		return SignalResult::success("signal event queued");
 	}
+
+	// For BlockCaller, queueSpace tokens are unreserved free queue slots.
+	if (_impl->queueSpace == nullptr) {
+		SignalLock lock(_impl->mutex);
+		if (lock) {
+			_impl->dispatchErrorCount++;
+		}
+		return SignalResult::failure(SignalStatus::InternalError, "signal queue space is unavailable");
+	}
+
+	if (xSemaphoreTake(_impl->queueSpace, timeoutToTicks(effectiveTimeout)) != pdTRUE) {
+		SignalLock lock(_impl->mutex);
+		if (lock) {
+			_impl->droppedCount++;
+			_impl->rejectedCount++;
+		}
+		return SignalResult::failure(SignalStatus::Timeout, "signal queue is full");
+	}
+
+	TaskHandle_t handle = nullptr;
+	{
+		SignalLock lock(_impl->mutex);
+		if (!lock) {
+			xSemaphoreGive(_impl->queueSpace);
+			return SignalResult::failure(SignalStatus::InternalError, "failed to lock signal");
+		}
+		if (!_impl->initialized || _impl->stopping) {
+			xSemaphoreGive(_impl->queueSpace);
+			_impl->rejectedCount++;
+			return SignalResult::failure(SignalStatus::NotInitialized, "signal is not initialized");
+		}
+		if (payloadSize > _impl->config.maxPayloadSize) {
+			xSemaphoreGive(_impl->queueSpace);
+			_impl->rejectedCount++;
+			return SignalResult::failure(SignalStatus::InvalidArgument, "payload is too large");
+		}
+		if (_impl->queueCount >= _impl->config.queueSize) {
+			xSemaphoreGive(_impl->queueSpace);
+			_impl->dispatchErrorCount++;
+			return SignalResult::failure(
+			    SignalStatus::InternalError,
+			    "signal queue reservation failed"
+			);
+		}
+		_impl->enqueueLocked(eventId, payloadSize, payload);
+		_impl->completeWaitersLocked(
+		    eventId,
+		    payloadSize,
+		    payload,
+		    SignalStatus::Ok,
+		    "signal event received"
+		);
+		_impl->postedCount++;
+		_impl->wakeTaskLocked(handle);
+	}
+	if (handle != nullptr) {
+		xTaskNotifyGive(handle);
+	}
+	return SignalResult::success("signal event queued");
 }
 
 SignalResult Signal::waitFor(SignalEventId eventId, uint32_t timeoutMs) {

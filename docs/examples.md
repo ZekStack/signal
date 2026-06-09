@@ -31,3 +31,7 @@ Uses `std::bind` to subscribe a private class method.
 ## Configuration
 
 Shows stack, queue, payload, subscription, waiter, overflow, and task-name configuration.
+
+## Stress
+
+Compile-covered stress sketch for manual runtime checks. It exercises `BlockCaller` with multiple producers, unsubscribe/resubscribe during dispatch, wait success/timeout/shutdown paths, scoped subscription handles, and diagnostics.
