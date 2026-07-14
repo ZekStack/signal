@@ -1,6 +1,6 @@
 {
   "name": "Signal",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Event bus and publish-subscribe library for ESP32.",
   "keywords": [
     "esp32",
