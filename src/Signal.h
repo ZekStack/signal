@@ -1,6 +1,9 @@
 #pragma once
 
 #include <Arduino.h>
+#include <array>
+#include <bit>
+#include <cstddef>
 #include <cstring>
 #include <functional>
 #include <memory>
@@ -212,8 +215,9 @@ class Signal {
 			    if (data == nullptr || size != sizeof(PayloadType)) {
 				    return;
 			    }
-			    PayloadType payload;
-			    memcpy(&payload, data, sizeof(PayloadType));
+			    std::array<std::byte, sizeof(PayloadType)> bytes{};
+			    memcpy(bytes.data(), data, sizeof(PayloadType));
+			    const PayloadType payload = std::bit_cast<PayloadType>(bytes);
 			    typedCallback(payload);
 		    }
 		);
