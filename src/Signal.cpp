@@ -13,6 +13,13 @@ namespace zek::signal {
 namespace {
 constexpr SignalSubscriptionId kInvalidSubscriptionId = 0;
 
+enum class SignalLifecycleState : uint8_t {
+	Stopped,
+	Initializing,
+	Running,
+	Stopping,
+};
+
 bool timeoutElapsed(uint32_t startedMs, uint32_t timeoutMs) {
 	if (timeoutMs == portMAX_DELAY) {
 		return false;
@@ -116,9 +123,9 @@ struct SignalImpl {
 	SignalWaiterRecord *waiters = nullptr;
 	size_t waiterCapacity = 0;
 	size_t activeWaiterCount = 0;
+	size_t activePostOperations = 0;
 	SemaphoreHandle_t queueSpace = nullptr;
-	bool initialized = false;
-	bool stopping = false;
+	SignalLifecycleState lifecycle = SignalLifecycleState::Stopped;
 	TaskHandle_t taskHandle = nullptr;
 	bool createdWithCaps = false;
 	SignalStackType actualStackType = SignalStackType::Internal;
@@ -131,6 +138,18 @@ struct SignalImpl {
 	uint32_t rejectedCount = 0;
 	uint32_t dispatchErrorCount = 0;
 	size_t stackHighWaterMarkBytes = 0;
+
+	bool isRunningLocked() const {
+		return lifecycle == SignalLifecycleState::Running;
+	}
+
+	bool isStoppingLocked() const {
+		return lifecycle == SignalLifecycleState::Stopping;
+	}
+
+	bool canCleanupLocked() const {
+		return taskHandle == nullptr && activeWaiterCount == 0 && activePostOperations == 0;
+	}
 
 	void resetCounters() {
 		nextSequence = 1;
@@ -173,13 +192,13 @@ struct SignalImpl {
 		activeSubscriptionCount = 0;
 		waiterCapacity = 0;
 		activeWaiterCount = 0;
+		activePostOperations = 0;
 		queueHead = 0;
 		queueCount = 0;
 	}
 
-	void resetRuntimeState() {
-		initialized = false;
-		stopping = false;
+	void resetRuntimeStateLocked() {
+		lifecycle = SignalLifecycleState::Stopped;
 		taskHandle = nullptr;
 		createdWithCaps = false;
 		actualStackType = SignalStackType::Internal;
@@ -187,12 +206,13 @@ struct SignalImpl {
 		queueCount = 0;
 		activeSubscriptionCount = 0;
 		activeWaiterCount = 0;
+		activePostOperations = 0;
 		resetCounters();
 	}
 
 	void cleanupAfterFailedInitLocked() {
 		cleanupStorage();
-		resetRuntimeState();
+		resetRuntimeStateLocked();
 	}
 
 	bool allocateStorageLocked(const SignalConfig &newConfig) {
@@ -262,8 +282,10 @@ struct SignalImpl {
 		return true;
 	}
 
-	void wakeTaskLocked(TaskHandle_t &handle) const {
-		handle = taskHandle;
+	void notifyTaskLocked() const {
+		if (taskHandle != nullptr) {
+			xTaskNotifyGive(taskHandle);
+		}
 	}
 
 	void enqueueLocked(SignalEventId eventId, size_t payloadSize, const void *payload) {
@@ -410,6 +432,13 @@ struct SignalImpl {
 		return count;
 	}
 
+	void observeStackHighWaterLocked() {
+		const size_t current = signal_task_support::currentStackHighWaterMarkBytes();
+		if (current > 0 && (stackHighWaterMarkBytes == 0 || current < stackHighWaterMarkBytes)) {
+			stackHighWaterMarkBytes = current;
+		}
+	}
+
 	bool popNext(SignalDispatchEvent &event) {
 		SignalLock lock(mutex);
 		if (!lock || !popLocked(event)) {
@@ -423,13 +452,13 @@ struct SignalImpl {
 
 	bool isStoppingAndEmpty() {
 		SignalLock lock(mutex);
-		return lock && stopping && queueCount == 0;
+		return lock && isStoppingLocked() && queueCount == 0;
 	}
 
 	void markTaskStopped() {
 		SignalLock lock(mutex);
 		if (lock) {
-			stackHighWaterMarkBytes = signal_task_support::currentStackHighWaterMarkBytes();
+			observeStackHighWaterLocked();
 			taskHandle = nullptr;
 		}
 	}
@@ -526,6 +555,7 @@ struct SignalImpl {
 					SignalLock lock(impl->mutex);
 					if (lock) {
 						impl->processedEventCount++;
+						impl->observeStackHighWaterLocked();
 					}
 				}
 				continue;
@@ -535,6 +565,12 @@ struct SignalImpl {
 				break;
 			}
 
+			{
+				SignalLock lock(impl->mutex);
+				if (lock) {
+					impl->observeStackHighWaterLocked();
+				}
+			}
 			ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 		}
 
@@ -679,59 +715,83 @@ SignalResult Signal::init(const SignalConfig &config) {
 		);
 	}
 
-	bool usePsramStack = false;
-	SignalStackType actualStackType = SignalStackType::Internal;
-	if (config.stackType == SignalStackType::Psram) {
-		if (!signal_task_support::hasExternalStackSupport()) {
-			return SignalResult::failure(
-			    SignalStatus::TaskCreateFailed,
-			    "PSRAM task stacks are not available"
-			);
-		}
-		usePsramStack = true;
-		actualStackType = SignalStackType::Psram;
-	} else if (
-	    config.stackType == SignalStackType::Auto &&
-	    signal_task_support::hasExternalStackSupport()
-	) {
-		usePsramStack = true;
-		actualStackType = SignalStackType::Psram;
-	}
-
 	{
 		SignalLock lock(_impl->mutex);
 		if (!lock) {
 			return SignalResult::failure(SignalStatus::InternalError, "failed to lock signal");
 		}
-		if (_impl->initialized) {
+		switch (_impl->lifecycle) {
+		case SignalLifecycleState::Running:
 			return SignalResult::failure(SignalStatus::AlreadyInitialized, "signal already initialized");
+		case SignalLifecycleState::Initializing:
+		case SignalLifecycleState::Stopping:
+			return SignalResult::failure(SignalStatus::Busy, "signal lifecycle transition in progress");
+		case SignalLifecycleState::Stopped:
+			break;
 		}
-		_impl->cleanupAfterFailedInitLocked();
+		_impl->lifecycle = SignalLifecycleState::Initializing;
 		if (!_impl->allocateStorageLocked(config)) {
 			_impl->cleanupAfterFailedInitLocked();
 			return SignalResult::failure(SignalStatus::OutOfMemory, "failed to allocate signal storage");
 		}
-
 		_impl->config = config;
-		_impl->actualStackType = actualStackType;
-		_impl->stopping = false;
 		_impl->createdWithCaps = false;
+		_impl->actualStackType = SignalStackType::Internal;
 		_impl->resetCounters();
 	}
 
 	TaskHandle_t handle = nullptr;
 	bool createdWithCaps = false;
-	const BaseType_t created = signal_task_support::createTask(
-	    &SignalImpl::taskEntry,
-	    config.taskName,
-	    config.stackSizeBytes,
-	    _impl.get(),
-	    config.priority,
-	    &handle,
-	    config.coreId,
-	    usePsramStack,
-	    createdWithCaps
-	);
+	SignalStackType actualStackType = SignalStackType::Internal;
+	BaseType_t created = pdFAIL;
+
+	const bool externalStackAvailable = signal_task_support::hasExternalStackSupport();
+	if (config.stackType == SignalStackType::Psram && !externalStackAvailable) {
+		SignalLock lock(_impl->mutex);
+		if (lock) {
+			_impl->cleanupAfterFailedInitLocked();
+		}
+		return SignalResult::failure(
+		    SignalStatus::TaskCreateFailed,
+		    "PSRAM task stacks are not available"
+		);
+	}
+
+	if (config.stackType == SignalStackType::Psram ||
+	    (config.stackType == SignalStackType::Auto && externalStackAvailable)) {
+		created = signal_task_support::createTask(
+		    &SignalImpl::taskEntry,
+		    config.taskName,
+		    config.stackSizeBytes,
+		    _impl.get(),
+		    config.priority,
+		    &handle,
+		    config.coreId,
+		    true,
+		    createdWithCaps
+		);
+		if (created == pdPASS && handle != nullptr) {
+			actualStackType = SignalStackType::Psram;
+		}
+	}
+
+	if ((created != pdPASS || handle == nullptr) && config.stackType != SignalStackType::Psram) {
+		handle = nullptr;
+		createdWithCaps = false;
+		created = signal_task_support::createTask(
+		    &SignalImpl::taskEntry,
+		    config.taskName,
+		    config.stackSizeBytes,
+		    _impl.get(),
+		    config.priority,
+		    &handle,
+		    config.coreId,
+		    false,
+		    createdWithCaps
+		);
+		actualStackType = SignalStackType::Internal;
+	}
+
 	if (created != pdPASS || handle == nullptr) {
 		SignalLock lock(_impl->mutex);
 		if (lock) {
@@ -742,11 +802,13 @@ SignalResult Signal::init(const SignalConfig &config) {
 
 	{
 		SignalLock lock(_impl->mutex);
-		if (lock) {
-			_impl->taskHandle = handle;
-			_impl->createdWithCaps = createdWithCaps;
-			_impl->initialized = true;
+		if (!lock) {
+			return SignalResult::failure(SignalStatus::InternalError, "failed to lock signal");
 		}
+		_impl->taskHandle = handle;
+		_impl->createdWithCaps = createdWithCaps;
+		_impl->actualStackType = actualStackType;
+		_impl->lifecycle = SignalLifecycleState::Running;
 	}
 
 	return SignalResult::success("signal initialized");
@@ -757,14 +819,16 @@ SignalResult Signal::end(uint32_t timeoutMs) {
 		return allocationFailure();
 	}
 
-	TaskHandle_t handle = nullptr;
 	{
 		SignalLock lock(_impl->mutex);
 		if (!lock) {
 			return SignalResult::failure(SignalStatus::InternalError, "failed to lock signal");
 		}
-		if (!_impl->initialized) {
+		if (_impl->lifecycle == SignalLifecycleState::Stopped) {
 			return SignalResult::success("signal is not initialized");
+		}
+		if (_impl->lifecycle == SignalLifecycleState::Initializing) {
+			return SignalResult::failure(SignalStatus::Busy, "signal initialization is in progress");
 		}
 		if (_impl->taskHandle != nullptr && xTaskGetCurrentTaskHandle() == _impl->taskHandle) {
 			return SignalResult::failure(
@@ -772,24 +836,25 @@ SignalResult Signal::end(uint32_t timeoutMs) {
 			    "end cannot be called from the signal task"
 			);
 		}
-		_impl->stopping = true;
-		_impl->failAllWaitersLocked(SignalStatus::NotInitialized, "signal is ending");
-		_impl->wakeTaskLocked(handle);
-	}
-	if (handle != nullptr) {
-		xTaskNotifyGive(handle);
+		if (_impl->lifecycle == SignalLifecycleState::Running) {
+			_impl->lifecycle = SignalLifecycleState::Stopping;
+			_impl->failAllWaitersLocked(SignalStatus::NotInitialized, "signal is ending");
+			_impl->notifyTaskLocked();
+		}
 	}
 
 	const uint32_t startedMs = millis();
 	while (true) {
 		{
 			SignalLock lock(_impl->mutex);
-			if (lock && _impl->taskHandle == nullptr && _impl->activeWaiterCount == 0) {
+			if (lock && _impl->lifecycle == SignalLifecycleState::Stopped) {
+				return SignalResult::success("signal ended");
+			}
+			if (lock && _impl->isStoppingLocked() && _impl->canCleanupLocked()) {
 				_impl->cleanupStorage();
-				_impl->initialized = false;
-				_impl->stopping = false;
-				_impl->queueHead = 0;
-				_impl->queueCount = 0;
+				_impl->lifecycle = SignalLifecycleState::Stopped;
+				_impl->createdWithCaps = false;
+				_impl->actualStackType = SignalStackType::Internal;
 				return SignalResult::success("signal ended");
 			}
 		}
@@ -840,7 +905,7 @@ SignalSubResult Signal::subscribeRaw(
 	if (!lock) {
 		return SignalSubResult::failure(SignalStatus::InternalError, "failed to lock signal");
 	}
-	if (!_impl->initialized || _impl->stopping) {
+	if (!_impl->isRunningLocked()) {
 		_impl->rejectedCount++;
 		return SignalSubResult::failure(SignalStatus::NotInitialized, "signal is not initialized");
 	}
@@ -886,7 +951,7 @@ SignalSubResult Signal::subscribeRaw(
 	if (!lock) {
 		return SignalSubResult::failure(SignalStatus::InternalError, "failed to lock signal");
 	}
-	if (!_impl->initialized || _impl->stopping) {
+	if (!_impl->isRunningLocked()) {
 		_impl->rejectedCount++;
 		return SignalSubResult::failure(SignalStatus::NotInitialized, "signal is not initialized");
 	}
@@ -960,7 +1025,7 @@ SignalSubResult Signal::subscribeFunction(
 	if (!lock) {
 		return SignalSubResult::failure(SignalStatus::InternalError, "failed to lock signal");
 	}
-	if (!_impl->initialized || _impl->stopping) {
+	if (!_impl->isRunningLocked()) {
 		_impl->rejectedCount++;
 		return SignalSubResult::failure(SignalStatus::NotInitialized, "signal is not initialized");
 	}
@@ -1006,7 +1071,7 @@ SignalResult Signal::unsubscribe(SignalSubscriptionId id) {
 	if (!lock) {
 		return SignalResult::failure(SignalStatus::InternalError, "failed to lock signal");
 	}
-	if (!_impl->initialized || _impl->stopping) {
+	if (!_impl->isRunningLocked()) {
 		_impl->rejectedCount++;
 		return SignalResult::failure(SignalStatus::NotInitialized, "signal is not initialized");
 	}
@@ -1056,12 +1121,14 @@ SignalResult Signal::postRaw(
 
 	uint32_t effectiveTimeout = timeoutMs;
 	SignalOverflowPolicy overflowPolicy = SignalOverflowPolicy::DropNewest;
+	SemaphoreHandle_t queueSpace = nullptr;
+	bool calledFromSignalTask = false;
 	{
 		SignalLock lock(_impl->mutex);
 		if (!lock) {
 			return SignalResult::failure(SignalStatus::InternalError, "failed to lock signal");
 		}
-		if (!_impl->initialized || _impl->stopping) {
+		if (!_impl->isRunningLocked()) {
 			_impl->rejectedCount++;
 			return SignalResult::failure(SignalStatus::NotInitialized, "signal is not initialized");
 		}
@@ -1071,25 +1138,10 @@ SignalResult Signal::postRaw(
 		}
 		effectiveTimeout = useDefaultTimeout ? _impl->config.defaultPostTimeoutMs : timeoutMs;
 		overflowPolicy = _impl->config.overflowPolicy;
-	}
 
-	if (overflowPolicy != SignalOverflowPolicy::BlockCaller) {
-		TaskHandle_t handle = nullptr;
-		{
-			SignalLock lock(_impl->mutex);
-			if (!lock) {
-				return SignalResult::failure(SignalStatus::InternalError, "failed to lock signal");
-			}
-			if (!_impl->initialized || _impl->stopping) {
-				_impl->rejectedCount++;
-				return SignalResult::failure(SignalStatus::NotInitialized, "signal is not initialized");
-			}
-			if (payloadSize > _impl->config.maxPayloadSize) {
-				_impl->rejectedCount++;
-				return SignalResult::failure(SignalStatus::InvalidArgument, "payload is too large");
-			}
+		if (overflowPolicy != SignalOverflowPolicy::BlockCaller) {
 			if (_impl->queueCount >= _impl->config.queueSize) {
-				if (_impl->config.overflowPolicy == SignalOverflowPolicy::DropNewest) {
+				if (overflowPolicy == SignalOverflowPolicy::DropNewest) {
 					_impl->droppedCount++;
 					_impl->rejectedCount++;
 					return SignalResult::failure(SignalStatus::QueueFull, "signal queue is full");
@@ -1107,72 +1159,82 @@ SignalResult Signal::postRaw(
 			    "signal event received"
 			);
 			_impl->postedCount++;
-			_impl->wakeTaskLocked(handle);
+			_impl->notifyTaskLocked();
+			return SignalResult::success("signal event queued");
 		}
-		if (handle != nullptr) {
-			xTaskNotifyGive(handle);
-		}
-		return SignalResult::success("signal event queued");
-	}
 
-	// For BlockCaller, queueSpace tokens are unreserved free queue slots.
-	if (_impl->queueSpace == nullptr) {
-		SignalLock lock(_impl->mutex);
-		if (lock) {
+		queueSpace = _impl->queueSpace;
+		if (queueSpace == nullptr) {
 			_impl->dispatchErrorCount++;
+			return SignalResult::failure(
+			    SignalStatus::InternalError,
+			    "signal queue space is unavailable"
+			);
 		}
-		return SignalResult::failure(SignalStatus::InternalError, "signal queue space is unavailable");
+		calledFromSignalTask =
+		    _impl->taskHandle != nullptr && xTaskGetCurrentTaskHandle() == _impl->taskHandle;
+		_impl->activePostOperations++;
 	}
 
-	if (xSemaphoreTake(_impl->queueSpace, timeoutToTicks(effectiveTimeout)) != pdTRUE) {
+	const TickType_t waitTicks = calledFromSignalTask ? 0 : timeoutToTicks(effectiveTimeout);
+	if (xSemaphoreTake(queueSpace, waitTicks) != pdTRUE) {
 		SignalLock lock(_impl->mutex);
 		if (lock) {
 			_impl->droppedCount++;
 			_impl->rejectedCount++;
+			if (_impl->activePostOperations > 0) {
+				_impl->activePostOperations--;
+			}
+		}
+		if (calledFromSignalTask) {
+			return SignalResult::failure(
+			    SignalStatus::Busy,
+			    "blocking post cannot wait from the signal task"
+			);
 		}
 		return SignalResult::failure(SignalStatus::Timeout, "signal queue is full");
 	}
 
-	TaskHandle_t handle = nullptr;
+	SignalResult result;
 	{
 		SignalLock lock(_impl->mutex);
 		if (!lock) {
-			xSemaphoreGive(_impl->queueSpace);
+			xSemaphoreGive(queueSpace);
 			return SignalResult::failure(SignalStatus::InternalError, "failed to lock signal");
 		}
-		if (!_impl->initialized || _impl->stopping) {
-			xSemaphoreGive(_impl->queueSpace);
+		if (!_impl->isRunningLocked()) {
+			xSemaphoreGive(queueSpace);
 			_impl->rejectedCount++;
-			return SignalResult::failure(SignalStatus::NotInitialized, "signal is not initialized");
-		}
-		if (payloadSize > _impl->config.maxPayloadSize) {
-			xSemaphoreGive(_impl->queueSpace);
+			result = SignalResult::failure(SignalStatus::NotInitialized, "signal is not initialized");
+		} else if (payloadSize > _impl->config.maxPayloadSize) {
+			xSemaphoreGive(queueSpace);
 			_impl->rejectedCount++;
-			return SignalResult::failure(SignalStatus::InvalidArgument, "payload is too large");
-		}
-		if (_impl->queueCount >= _impl->config.queueSize) {
-			xSemaphoreGive(_impl->queueSpace);
+			result = SignalResult::failure(SignalStatus::InvalidArgument, "payload is too large");
+		} else if (_impl->queueCount >= _impl->config.queueSize) {
+			xSemaphoreGive(queueSpace);
 			_impl->dispatchErrorCount++;
-			return SignalResult::failure(
+			result = SignalResult::failure(
 			    SignalStatus::InternalError,
 			    "signal queue reservation failed"
 			);
+		} else {
+			_impl->enqueueLocked(eventId, payloadSize, payload);
+			_impl->completeWaitersLocked(
+			    eventId,
+			    payloadSize,
+			    payload,
+			    SignalStatus::Ok,
+			    "signal event received"
+			);
+			_impl->postedCount++;
+			_impl->notifyTaskLocked();
+			result = SignalResult::success("signal event queued");
 		}
-		_impl->enqueueLocked(eventId, payloadSize, payload);
-		_impl->completeWaitersLocked(
-		    eventId,
-		    payloadSize,
-		    payload,
-		    SignalStatus::Ok,
-		    "signal event received"
-		);
-		_impl->postedCount++;
-		_impl->wakeTaskLocked(handle);
+		if (_impl->activePostOperations > 0) {
+			_impl->activePostOperations--;
+		}
 	}
-	if (handle != nullptr) {
-		xTaskNotifyGive(handle);
-	}
-	return SignalResult::success("signal event queued");
+	return result;
 }
 
 SignalResult Signal::waitFor(SignalEventId eventId, uint32_t timeoutMs) {
@@ -1199,7 +1261,7 @@ SignalResult Signal::waitForRaw(
 		if (!lock) {
 			return SignalResult::failure(SignalStatus::InternalError, "failed to lock signal");
 		}
-		if (!_impl->initialized || _impl->stopping) {
+		if (!_impl->isRunningLocked()) {
 			_impl->rejectedCount++;
 			return SignalResult::failure(SignalStatus::NotInitialized, "signal is not initialized");
 		}

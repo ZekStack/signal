@@ -33,9 +33,17 @@ SignalResult init(const SignalConfig &config = SignalConfig());
 SignalResult end(uint32_t timeoutMs = 5000);
 ```
 
-`end()` stops accepting new posts, wakes current waiters with failure, drains queued events, stops the dispatch task, waits for active waiters to release their slots, and then frees internal storage.
+Lifecycle transitions are serialized internally:
 
-If `end(timeoutMs)` times out, internal storage remains allocated and shutdown is still in progress.
+```text
+Stopped -> Initializing -> Running -> Stopping -> Stopped
+```
+
+A concurrent `init()` during initialization or shutdown returns `Busy`. Calling `init()` while running returns `AlreadyInitialized`.
+
+`end()` stops accepting new posts, subscriptions, and waits; wakes current waiters with failure; drains queued events; stops the dispatch task; waits for active blocking post operations and waiter calls to leave internal storage; then frees that storage.
+
+If `end(timeoutMs)` returns `Timeout`, lifecycle remains `Stopping`, storage remains allocated, and a later `end()` call can finish cleanup.
 
 Calling `end()` from the internal Signal task returns `InvalidArgument`.
 
@@ -62,7 +70,7 @@ No-payload subscribers match no-payload posts. Payload subscribers match by even
 
 Callbacks run from the internal Signal task. Keep callbacks short and avoid blocking forever.
 
-`unsubscribe()` prevents future dispatch matches. A callback already collected for the current dispatch may still run once.
+`unsubscribe()` prevents a not-yet-started callback from being invoked. A callback already executing is allowed to finish.
 
 Signal has two callback paths:
 
@@ -82,6 +90,10 @@ SignalResult postWithTimeout(Event event, const Payload &payload, uint32_t timeo
 
 `post()` only enqueues accepted events. It does not run callbacks inline.
 
+When `BlockCaller` is configured, posts from ordinary tasks wait for a queue-space reservation up to the configured timeout. A post from the Signal task itself never waits because that would deadlock the only dispatch task. It attempts an immediate reservation and returns `Busy` when the queue is full.
+
+Blocking post operations are registered before they release the internal mutex. Shutdown does not delete queue or semaphore storage until every registered post operation has returned.
+
 ## Wait
 
 ```cpp
@@ -95,11 +107,18 @@ Calling `waitFor()` from the internal Signal task returns `InvalidArgument`.
 
 If `SignalConfig::maxWaiters` is `0`, `waitFor()` is disabled and returns `TooManyWaiters`.
 
+## Payloads
+
+Payload types must be trivially copyable. Typed callback reconstruction uses C++20 byte-wise reconstruction and does not require the payload type to be default-constructible.
+
 ## Diagnostics
 
 ```cpp
 SignalDiag diag = bus.getDiagnostics();
 ```
 
-Diagnostics include posted, dispatched, dropped, queue usage, subscription count, waiter count, dispatch errors, and task stack high-water mark.
+Diagnostics include posted, processed, callback, dropped, rejected, queue usage, subscription count, waiter count, dispatch errors, and task stack high-water mark.
+
 Use `processedEventCount` for dequeued events and `callbackInvokeCount` for actual callback calls. `dispatchedCount` remains as a compatibility alias for processed events.
+
+`stackHighWaterMarkBytes` is the minimum observed remaining stack space for the running Signal task. It is sampled while the task is active and again during shutdown.

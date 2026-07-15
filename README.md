@@ -14,7 +14,7 @@ Signal helps Arduino ESP32 applications decouple modules with typed events, boun
 * **Bounded core** - queue storage, payload bytes, waiters, and raw callback subscriptions are configured up front.
 * **Task-side callbacks** - subscriber callbacks run from the internal Signal task.
 * **Future-only waits** - `waitFor()` wakes on future matching posts and does not consume subscriber events.
-* **Production-minded** - result-based errors, diagnostics, thread-safe internals, and no exceptions.
+* **Production-minded** - serialized lifecycle transitions, shutdown-safe blocked producers, result-based errors, diagnostics, thread-safe internals, and no exceptions.
 
 ## Install
 
@@ -91,7 +91,9 @@ void loop() {
 * `waitFor()` only waits for future posts; it does not read from a global event history.
 * A posted event wakes all matching waiters and is also delivered to subscribers.
 * Stack sizes are FreeRTOS byte sizes on ESP32 and must be at least 1024 bytes.
-* `SignalStackType::Auto` prefers PSRAM task stacks when supported and falls back to internal RAM.
+* `SignalStackType::Auto` prefers a PSRAM task stack and retries with internal RAM if external task creation fails.
+* With `BlockCaller`, a post made from a Signal callback never blocks. It succeeds only when queue space is immediately available; otherwise it returns `Busy`.
+* `end(timeoutMs)` can return `Timeout` while shutdown continues. A later `end()` call can complete cleanup.
 
 ## Examples
 
@@ -157,7 +159,7 @@ For the full API, see [`docs/api.md`](docs/api.md).
 | PSRAM | Optional for task stacks when ESP-IDF support is available |
 | Dependencies | none |
 | Exceptions | Not used |
-| Status | Early-stage `0.0.1` |
+| Status | `0.1.0` release candidate |
 
 ## License
 

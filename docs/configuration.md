@@ -31,7 +31,7 @@ Signal allocates queue slots, payload storage, dispatch storage, subscription re
 
 The bounded core guarantee applies to post, dispatch, wait registration, waiter completion, unsubscribe, diagnostics, and raw callback subscription after successful `init()`. Capturing lambda and `std::function` subscriptions may allocate during `subscribe()`.
 
-During shutdown, storage is freed only after the dispatch task has stopped and active waiters have released their slots. If `end(timeoutMs)` returns `Timeout`, shutdown remains in progress and storage stays allocated.
+During shutdown, storage is freed only after the dispatch task has stopped, active waiters have released their slots, and every blocking post operation has left the queue-space semaphore. If `end(timeoutMs)` returns `Timeout`, shutdown remains in progress and storage stays allocated.
 
 ## Overflow Policies
 
@@ -41,10 +41,14 @@ During shutdown, storage is freed only after the dispatch task has stopped and a
 
 `BlockCaller` waits for queue space up to the post timeout. `post()` uses `defaultPostTimeoutMs`; `postWithTimeout()` uses the supplied timeout. Internally, queue space is tracked with a counting semaphore whose tokens represent unreserved free queue slots.
 
+A `BlockCaller` post from a Signal callback never waits. It can use an immediately available slot, but returns `Busy` when the queue is full so the dispatch task cannot deadlock itself.
+
 ## Stack Behavior
 
 Stack size is in FreeRTOS bytes, matching ESP-IDF-flavored task APIs used across ZekStack.
 
-`SignalStackType::Auto` prefers PSRAM task stacks when supported by the platform and falls back to internal RAM.
+`SignalStackType::Auto` prefers PSRAM task stacks when supported. If external task creation fails, it retries using internal RAM.
 
-`SignalStackType::Psram` fails initialization if PSRAM task stacks are unavailable.
+`SignalStackType::Psram` fails initialization if PSRAM task stacks are unavailable or external task creation fails.
+
+`SignalStackType::Internal` always uses internal RAM.

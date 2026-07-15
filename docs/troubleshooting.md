@@ -2,23 +2,19 @@
 
 ## `signal is not initialized`
 
-Call `init()` before subscribing, posting, or waiting. This can also happen while `end()` is in progress.
+Call `init()` before subscribing, posting, or waiting. This response is also expected after shutdown has entered `Stopping`.
 
-## `payload is too large`
+## `signal lifecycle transition in progress`
 
-Increase `SignalConfig::maxPayloadSize` or reduce the payload struct size.
+Another task is currently initializing or shutting down the same `Signal` instance. Concurrent lifecycle calls are serialized; retry after the current transition completes.
 
-## Payload callback does not run
-
-Payload subscribers match by event ID and exact payload size. Check that the subscriber and post use the same payload type.
-
-## `waitFor()` times out
-
-`waitFor()` only waits for future events. A matching event posted before `waitFor()` starts is not consumed from history.
-
-## Queue full
+## Queue is full
 
 Increase `queueSize`, reduce producer rate, keep callbacks short, or choose a different `SignalOverflowPolicy`.
+
+## `Busy` from a callback post
+
+With `BlockCaller`, Signal callbacks are not allowed to wait for queue space because callbacks run on the only task that drains the queue. The post succeeds when a slot is immediately available and otherwise returns `Busy`.
 
 ## Callback blocks other events
 
@@ -30,7 +26,7 @@ Do not call `end()` or destroy the `Signal` instance from a Signal callback. The
 
 ## `end()` times out
 
-Queued callbacks or waiter tasks may still be draining. Internal storage remains allocated after a timeout so active waiters do not read freed memory.
+Queued callbacks, active waiter tasks, or blocked producers may still be draining. Internal storage remains allocated after a timeout. New operations remain rejected, and a later `end()` call can complete cleanup.
 
 ## Handle subscription disappears immediately
 
@@ -39,3 +35,7 @@ Queued callbacks or waiter tasks may still be draining. Internal storage remains
 ## Need allocation-free subscriptions
 
 Use `subscribeRaw()` with a function pointer and context pointer. Lambda, `std::bind`, and `std::function` subscriptions are convenience APIs and may allocate during `subscribe()`.
+
+## `Auto` reports an internal stack
+
+`SignalStackType::Auto` first tries PSRAM when supported, then falls back to internal RAM if external task creation fails. Inspect `SignalDiag::requestedStackType` and `actualStackType` to see which path was used.
