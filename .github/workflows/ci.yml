@@ -18,7 +18,7 @@ env:
 
 jobs:
   source-audit:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, zekstack-ci]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -35,7 +35,7 @@ jobs:
           fi
 
   metadata-validation:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, zekstack-ci]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -61,7 +61,7 @@ jobs:
           project-type: library
 
   host-tests:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, zekstack-ci]
     needs: source-audit
     steps:
       - name: Checkout
@@ -87,7 +87,7 @@ jobs:
         run: ./signal-host-tests
 
   build-examples:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, zekstack-ci]
     needs: source-audit
     strategy:
       fail-fast: false
@@ -134,7 +134,7 @@ jobs:
           done
 
   arduino-cli:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, zekstack-ci]
     needs: source-audit
     strategy:
       fail-fast: false
@@ -197,7 +197,7 @@ jobs:
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [source-audit, metadata-validation, host-tests, build-examples, arduino-cli]
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, zekstack-ci]
     permissions:
       contents: write
     steps:
