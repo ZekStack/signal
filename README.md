@@ -91,7 +91,7 @@ void loop() {
 * `waitFor()` only waits for future posts; it does not read from a global event history.
 * A posted event wakes all matching waiters and is also delivered to subscribers.
 * Stack sizes are FreeRTOS byte sizes on ESP32 and must be at least 1024 bytes.
-* `SignalStackType::Auto` prefers a PSRAM task stack and retries with internal RAM if external task creation fails.
+* Signal uses `Strata::MemoryPolicy`; task stacks default to `PreferExternal`, while ordinary Signal-owned storage defaults to backend placement.
 * With `BlockCaller`, a post made from a Signal callback never blocks. It succeeds only when queue space is immediately available; otherwise it returns `Busy`.
 * `end(timeoutMs)` can return `Timeout` while shutdown continues. A later `end()` call can complete cleanup.
 
@@ -156,7 +156,7 @@ For the full API, see [`docs/api.md`](docs/api.md).
 | Platform | `espressif32` |
 | Language | C++20 |
 | Filesystem | none |
-| PSRAM | Optional for task stacks when ESP-IDF support is available |
+| PSRAM | Optional through Strata placement for task stacks and movable Signal-owned storage |
 | Dependencies | none |
 | Exceptions | Not used |
 | Status | `0.1.0` release candidate |
