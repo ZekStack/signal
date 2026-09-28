@@ -362,7 +362,7 @@ struct SignalImpl {
 			waiter.status = status;
 			waiter.message = message != nullptr ? message : "signal wait completed";
 			waiter.completed = true;
-			waiter.done.give();
+			(void)waiter.done.give();
 		}
 	}
 
@@ -378,7 +378,7 @@ struct SignalImpl {
 			waiter.status = status;
 			waiter.message = message != nullptr ? message : "signal stopped";
 			waiter.completed = true;
-			waiter.done.give();
+			(void)waiter.done.give();
 		}
 	}
 
@@ -481,7 +481,7 @@ struct SignalImpl {
 			return false;
 		}
 		if (config.overflowPolicy == SignalOverflowPolicy::BlockCaller && queueSpace) {
-			queueSpace.give();
+			(void)queueSpace.give();
 		}
 		return true;
 	}
@@ -1208,19 +1208,19 @@ SignalResult Signal::postRaw(
 	{
 		SignalLock lock(_impl->mutex);
 		if (!lock) {
-			queueSpace->give();
+			(void)queueSpace->give();
 			return SignalResult::failure(SignalStatus::InternalError, "failed to lock signal");
 		}
 		if (!_impl->isRunningLocked()) {
-			queueSpace->give();
+			(void)queueSpace->give();
 			_impl->rejectedCount++;
 			result = SignalResult::failure(SignalStatus::NotInitialized, "signal is not initialized");
 		} else if (payloadSize > _impl->config.maxPayloadSize) {
-			queueSpace->give();
+			(void)queueSpace->give();
 			_impl->rejectedCount++;
 			result = SignalResult::failure(SignalStatus::InvalidArgument, "payload is too large");
 		} else if (_impl->queueCount >= _impl->config.queueSize) {
-			queueSpace->give();
+			(void)queueSpace->give();
 			_impl->dispatchErrorCount++;
 			result = SignalResult::failure(
 			    SignalStatus::InternalError,
@@ -1290,7 +1290,7 @@ SignalResult Signal::waitForRaw(
 			_impl->rejectedCount++;
 			return SignalResult::failure(SignalStatus::TooManyWaiters, "maximum waiters reached");
 		}
-		waiter->done.tryTake();
+		(void)waiter->done.tryTake();
 		waiter->eventId = eventId;
 		waiter->payloadSize = payloadSize;
 		waiter->payloadOut = payloadOut;
@@ -1302,7 +1302,7 @@ SignalResult Signal::waitForRaw(
 		done = &waiter->done;
 	}
 
-	done->take(timeoutToTicks(timeoutMs));
+	(void)done->take(timeoutToTicks(timeoutMs));
 
 	SignalResult result;
 	{
