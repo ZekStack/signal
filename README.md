@@ -157,7 +157,7 @@ For the full API, see [`docs/api.md`](docs/api.md).
 | Language | C++20 |
 | Filesystem | none |
 | PSRAM | Optional through Strata placement for task stacks and movable Signal-owned storage |
-| Dependencies | none |
+| Dependencies | Strata |
 | Exceptions | Not used |
 | Status | `0.2.0` Strata migration |
 
