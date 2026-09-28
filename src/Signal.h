@@ -1,12 +1,12 @@
 #pragma once
 
 #include <Arduino.h>
+#include <Strata.h>
 #include <array>
 #include <bit>
 #include <cstddef>
 #include <cstring>
 #include <functional>
-#include <memory>
 #include <type_traits>
 
 #include <freertos/FreeRTOS.h>
@@ -36,12 +36,6 @@ enum class SignalStatus : uint8_t {
 	InternalError,
 };
 
-enum class SignalStackType : uint8_t {
-	Auto,
-	Internal,
-	Psram,
-};
-
 enum class SignalOverflowPolicy : uint8_t {
 	DropNewest,
 	DropOldest,
@@ -49,10 +43,14 @@ enum class SignalOverflowPolicy : uint8_t {
 };
 
 struct SignalConfig {
+	Strata::MemoryPolicy memory{
+	    .allocation = Strata::Placement::Default,
+	    .taskStack = Strata::Placement::PreferExternal,
+	};
+
 	uint32_t stackSizeBytes = 4096;
 	UBaseType_t priority = 1;
 	BaseType_t coreId = tskNO_AFFINITY;
-	SignalStackType stackType = SignalStackType::Auto;
 	size_t queueSize = 20;
 	size_t maxPayloadSize = 128;
 	size_t maxSubscriptions = 32;
@@ -99,8 +97,14 @@ struct SignalDiag {
 	size_t waiterCount = 0;
 	uint32_t dispatchErrorCount = 0;
 	size_t stackHighWaterMarkBytes = 0;
-	SignalStackType requestedStackType = SignalStackType::Auto;
-	SignalStackType actualStackType = SignalStackType::Internal;
+	Strata::Placement taskStackPlacement = Strata::Placement::Default;
+	Strata::Region taskStackRegion = Strata::Region::Unknown;
+	Strata::Placement allocationPlacement = Strata::Placement::Default;
+	Strata::Region queueStorageRegion = Strata::Region::Unknown;
+	Strata::Region queuePayloadRegion = Strata::Region::Unknown;
+	Strata::Region dispatchPayloadRegion = Strata::Region::Unknown;
+	Strata::Region subscriptionStorageRegion = Strata::Region::Unknown;
+	Strata::Region waiterStorageRegion = Strata::Region::Unknown;
 };
 
 using SignalCallback = std::function<void()>;
@@ -412,7 +416,7 @@ class Signal {
 	    uint32_t timeoutMs
 	);
 
-	std::unique_ptr<SignalImpl> _impl;
+	Strata::UniquePtr<SignalImpl> _impl;
 };
 
 } // namespace zek::signal
@@ -427,7 +431,6 @@ using SignalOverflowPolicy = zek::signal::SignalOverflowPolicy;
 using SignalRawCallback = zek::signal::SignalRawCallback;
 using SignalRawPayloadCallback = zek::signal::SignalRawPayloadCallback;
 using SignalResult = zek::signal::SignalResult;
-using SignalStackType = zek::signal::SignalStackType;
 using SignalStatus = zek::signal::SignalStatus;
 using SignalSubResult = zek::signal::SignalSubResult;
 using SignalSubscriptionHandle = zek::signal::SignalSubscriptionHandle;
