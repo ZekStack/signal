@@ -1,13 +1,14 @@
 # Configuration
 
-`SignalConfig` controls task behavior and memory limits.
+`SignalConfig` controls task behavior, bounded storage, and the shared Strata memory policy.
 
 ```cpp
 SignalConfig config;
+config.memory.allocation = Strata::Placement::Default;
+config.memory.taskStack = Strata::Placement::PreferExternal;
 config.stackSizeBytes = 4096;
 config.priority = 1;
 config.coreId = tskNO_AFFINITY;
-config.stackType = SignalStackType::Auto;
 config.queueSize = 20;
 config.maxPayloadSize = 128;
 config.maxSubscriptions = 32;
@@ -27,7 +28,7 @@ bus.init(config);
 
 `maxWaiters` limits tasks blocked in `waitFor()`. Set it to `0` to disable `waitFor()`; wait attempts then return `TooManyWaiters`.
 
-Signal allocates queue slots, payload storage, dispatch storage, subscription records, waiter records, waiter semaphores, and the queue-space counting semaphore during `init()`. A failed `init()` rolls back partial storage so the object can be retried with a different config.
+Signal allocates queue slots, payload storage, dispatch storage, subscription records, waiter records, waiter semaphores, and the queue-space counting semaphore during `init()`. Movable Signal-owned storage follows `memory.allocation`; FreeRTOS synchronization control blocks remain internal through Strata. A failed `init()` rolls back partial storage so the object can be retried with a different config.
 
 The bounded core guarantee applies to post, dispatch, wait registration, waiter completion, unsubscribe, diagnostics, and raw callback subscription after successful `init()`. Capturing lambda and `std::function` subscriptions may allocate during `subscribe()`.
 
@@ -43,12 +44,17 @@ During shutdown, storage is freed only after the dispatch task has stopped, acti
 
 A `BlockCaller` post from a Signal callback never waits. It can use an immediately available slot, but returns `Busy` when the queue is full so the dispatch task cannot deadlock itself.
 
-## Stack Behavior
+## Memory and stack placement
 
-Stack size is in FreeRTOS bytes, matching ESP-IDF-flavored task APIs used across ZekStack.
+Signal uses the same `Strata::MemoryPolicy` vocabulary as Worker and the other migrated ZekStack libraries.
 
-`SignalStackType::Auto` prefers PSRAM task stacks when supported. If external task creation fails, it retries using internal RAM.
+- `memory.allocation` controls queue, payload, dispatch, subscription, and waiter backing storage.
+- `memory.taskStack` controls the dispatcher task stack.
+- The defaults are `Placement::Default` for ordinary storage and `Placement::PreferExternal` for the task stack.
+- `PreferExternal` may fall back to internal memory.
+- `RequireExternal` is strict and causes initialization to fail when the requested storage cannot be satisfied.
+- `Internal` keeps the requested storage in internal RAM.
 
-`SignalStackType::Psram` fails initialization if PSRAM task stacks are unavailable or external task creation fails.
+Stack size is in FreeRTOS bytes and must be at least 1024 bytes and aligned to `sizeof(StackType_t)`.
 
-`SignalStackType::Internal` always uses internal RAM.
+`SignalDiag` reports requested placement separately from observed regions. This is important because individual `PreferExternal` allocations may independently fall back to internal memory.
