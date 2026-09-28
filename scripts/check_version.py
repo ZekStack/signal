@@ -37,8 +37,12 @@ def main() -> None:
         )
 
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    if "| Status | `0.1.0` release candidate |" not in readme:
-        fail("README status does not identify the 0.1.0 release candidate")
+    status_pattern = re.compile(
+        rf"^\| Status \| `{re.escape(json_version)}` .+ \|$",
+        re.MULTILINE,
+    )
+    if status_pattern.search(readme) is None:
+        fail(f"README status does not identify version {json_version}")
 
     if len(sys.argv) > 2:
         fail("usage: check_version.py [vX.Y.Z]")
