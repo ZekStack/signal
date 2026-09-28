@@ -1,17 +1,20 @@
 #include "Signal.h"
 
-#include "internal/SignalMutex.h"
-#include "internal/SignalTaskSupport.h"
+#include <strata/freertos/BinarySemaphore.h>
+#include <strata/freertos/CountingSemaphore.h>
+#include <strata/freertos/Mutex.h>
+#include <strata/freertos/Task.h>
 
+#include <atomic>
 #include <cstring>
 #include <limits>
-#include <new>
-
-#include <freertos/semphr.h>
+#include <optional>
+#include <utility>
 
 namespace zek::signal {
 namespace {
 constexpr SignalSubscriptionId kInvalidSubscriptionId = 0;
+constexpr size_t kMinStackSizeBytes = 1024;
 
 enum class SignalLifecycleState : uint8_t {
 	Stopped,
@@ -34,12 +37,47 @@ TickType_t timeoutToTicks(uint32_t timeoutMs) {
 	return pdMS_TO_TICKS(timeoutMs);
 }
 
+bool isValidStackSize(size_t stackBytes) {
+	return stackBytes >= kMinStackSizeBytes && (stackBytes % sizeof(StackType_t)) == 0;
+}
+
 SignalResult allocationFailure() {
 	return SignalResult::failure(SignalStatus::OutOfMemory, "signal allocation failed");
 }
 
 SignalSubResult subscriptionAllocationFailure() {
 	return SignalSubResult::failure(SignalStatus::OutOfMemory, "signal allocation failed");
+}
+
+class SignalLock {
+  public:
+	explicit SignalLock(Strata::FreeRTOS::RecursiveMutex &mutex)
+	    : _mutex(mutex), _locked(mutex.lock()) {
+	}
+
+	~SignalLock() {
+		if (_locked) {
+			_mutex.unlock();
+		}
+	}
+
+	SignalLock(const SignalLock &) = delete;
+	SignalLock &operator=(const SignalLock &) = delete;
+
+	explicit operator bool() const {
+		return _locked;
+	}
+
+  private:
+	Strata::FreeRTOS::RecursiveMutex &_mutex;
+	bool _locked = false;
+};
+
+[[noreturn]] void suspendForever() {
+	vTaskSuspend(nullptr);
+	for (;;) {
+		vTaskDelay(portMAX_DELAY);
+	}
 }
 } // namespace
 
@@ -95,7 +133,7 @@ struct SignalWaiterRecord {
 	SignalEventId eventId = 0;
 	size_t payloadSize = 0;
 	void *payloadOut = nullptr;
-	SemaphoreHandle_t done = nullptr;
+	Strata::FreeRTOS::BinarySemaphore done;
 	bool inUse = false;
 	bool completed = false;
 	SignalStatus status = SignalStatus::Timeout;
@@ -108,27 +146,34 @@ struct SignalDispatchMatch {
 	uint32_t generation = 0;
 };
 
+using SignalQueuedEvents = Strata::Vector<SignalQueuedEvent>;
+using SignalDispatchMatches = Strata::Vector<SignalDispatchMatch>;
+using SignalSubscriptions = Strata::Vector<SignalSubscriptionRecord>;
+using SignalWaiters = Strata::Vector<SignalWaiterRecord>;
+
 struct SignalImpl {
+	SignalImpl() noexcept : mutex(Strata::FreeRTOS::RecursiveMutex::create()) {
+	}
+
 	SignalConfig config{};
-	SignalMutex mutex;
-	SignalQueuedEvent *queue = nullptr;
-	uint8_t *queuePayloadStorage = nullptr;
-	uint8_t *dispatchPayload = nullptr;
-	SignalDispatchMatch *dispatchMatches = nullptr;
+	Strata::FreeRTOS::RecursiveMutex mutex;
+	std::optional<SignalQueuedEvents> queue;
+	Strata::Buffer queuePayloadStorage;
+	Strata::Buffer dispatchPayload;
+	std::optional<SignalDispatchMatches> dispatchMatches;
 	size_t queueHead = 0;
 	size_t queueCount = 0;
-	SignalSubscriptionRecord *subscriptions = nullptr;
+	std::optional<SignalSubscriptions> subscriptions;
 	size_t subscriptionCapacity = 0;
 	size_t activeSubscriptionCount = 0;
-	SignalWaiterRecord *waiters = nullptr;
+	std::optional<SignalWaiters> waiters;
 	size_t waiterCapacity = 0;
 	size_t activeWaiterCount = 0;
 	size_t activePostOperations = 0;
-	SemaphoreHandle_t queueSpace = nullptr;
+	Strata::FreeRTOS::CountingSemaphore queueSpace;
 	SignalLifecycleState lifecycle = SignalLifecycleState::Stopped;
-	TaskHandle_t taskHandle = nullptr;
-	bool createdWithCaps = false;
-	SignalStackType actualStackType = SignalStackType::Internal;
+	Strata::FreeRTOS::Task task;
+	std::atomic<bool> taskReadyForDelete{false};
 	uint64_t nextSequence = 1;
 	SignalSubscriptionId nextSubscriptionId = 1;
 	uint32_t postedCount = 0;
@@ -148,7 +193,8 @@ struct SignalImpl {
 	}
 
 	bool canCleanupLocked() const {
-		return taskHandle == nullptr && activeWaiterCount == 0 && activePostOperations == 0;
+		return taskReadyForDelete.load(std::memory_order_acquire) &&
+		       activeWaiterCount == 0 && activePostOperations == 0;
 	}
 
 	void resetCounters() {
@@ -164,30 +210,13 @@ struct SignalImpl {
 	}
 
 	void cleanupStorage() {
-		if (waiters != nullptr) {
-			for (size_t i = 0; i < waiterCapacity; ++i) {
-				if (waiters[i].done != nullptr) {
-					vSemaphoreDelete(waiters[i].done);
-					waiters[i].done = nullptr;
-				}
-			}
-		}
-		if (queueSpace != nullptr) {
-			vSemaphoreDelete(queueSpace);
-			queueSpace = nullptr;
-		}
-		delete[] waiters;
-		delete[] subscriptions;
-		delete[] dispatchMatches;
-		delete[] dispatchPayload;
-		delete[] queuePayloadStorage;
-		delete[] queue;
-		waiters = nullptr;
-		subscriptions = nullptr;
-		dispatchMatches = nullptr;
-		dispatchPayload = nullptr;
-		queuePayloadStorage = nullptr;
-		queue = nullptr;
+		queueSpace.reset();
+		waiters.reset();
+		subscriptions.reset();
+		dispatchMatches.reset();
+		dispatchPayload.reset();
+		queuePayloadStorage.reset();
+		queue.reset();
 		subscriptionCapacity = 0;
 		activeSubscriptionCount = 0;
 		waiterCapacity = 0;
@@ -199,9 +228,7 @@ struct SignalImpl {
 
 	void resetRuntimeStateLocked() {
 		lifecycle = SignalLifecycleState::Stopped;
-		taskHandle = nullptr;
-		createdWithCaps = false;
-		actualStackType = SignalStackType::Internal;
+		taskReadyForDelete.store(false, std::memory_order_release);
 		queueHead = 0;
 		queueCount = 0;
 		activeSubscriptionCount = 0;
@@ -217,64 +244,58 @@ struct SignalImpl {
 
 	bool allocateStorageLocked(const SignalConfig &newConfig) {
 		cleanupStorage();
+		const Strata::Placement placement = newConfig.memory.allocation;
 
-		queue = new (std::nothrow) SignalQueuedEvent[newConfig.queueSize];
-		if (queue == nullptr) {
-			cleanupStorage();
-			return false;
-		}
+		queue.emplace(Strata::Allocator<SignalQueuedEvent>{placement});
+		queue->resize(newConfig.queueSize);
 
 		const size_t payloadBytes = newConfig.queueSize * newConfig.maxPayloadSize;
 		if (payloadBytes > 0) {
-			queuePayloadStorage = new (std::nothrow) uint8_t[payloadBytes];
-			if (queuePayloadStorage == nullptr) {
+			queuePayloadStorage = Strata::Buffer(payloadBytes, placement);
+			if (queuePayloadStorage.data() == nullptr) {
 				cleanupStorage();
 				return false;
 			}
 		}
+		auto *queuePayload = queuePayloadStorage.data<uint8_t>();
 		for (size_t i = 0; i < newConfig.queueSize; ++i) {
-			queue[i].payload = queuePayloadStorage != nullptr
-			                       ? queuePayloadStorage + (i * newConfig.maxPayloadSize)
+			(*queue)[i].payload = queuePayload != nullptr
+			                       ? queuePayload + (i * newConfig.maxPayloadSize)
 			                       : nullptr;
 		}
 
 		if (newConfig.maxPayloadSize > 0) {
-			dispatchPayload = new (std::nothrow) uint8_t[newConfig.maxPayloadSize];
-			if (dispatchPayload == nullptr) {
+			dispatchPayload = Strata::Buffer(newConfig.maxPayloadSize, placement);
+			if (dispatchPayload.data() == nullptr) {
 				cleanupStorage();
 				return false;
 			}
 		}
 
-		dispatchMatches = new (std::nothrow) SignalDispatchMatch[newConfig.maxSubscriptions];
-		subscriptions = new (std::nothrow) SignalSubscriptionRecord[newConfig.maxSubscriptions];
-		if (dispatchMatches == nullptr || subscriptions == nullptr) {
-			cleanupStorage();
-			return false;
-		}
+		dispatchMatches.emplace(Strata::Allocator<SignalDispatchMatch>{placement});
+		dispatchMatches->resize(newConfig.maxSubscriptions);
+		subscriptions.emplace(Strata::Allocator<SignalSubscriptionRecord>{placement});
+		subscriptions->resize(newConfig.maxSubscriptions);
 		subscriptionCapacity = newConfig.maxSubscriptions;
 
 		if (newConfig.maxWaiters > 0) {
-			waiters = new (std::nothrow) SignalWaiterRecord[newConfig.maxWaiters];
-			if (waiters == nullptr) {
-				cleanupStorage();
-				return false;
-			}
+			waiters.emplace(Strata::Allocator<SignalWaiterRecord>{placement});
+			waiters->resize(newConfig.maxWaiters);
 			waiterCapacity = newConfig.maxWaiters;
-			for (size_t i = 0; i < waiterCapacity; ++i) {
-				waiters[i].done = xSemaphoreCreateBinary();
-				if (waiters[i].done == nullptr) {
+			for (auto &waiter : *waiters) {
+				waiter.done = Strata::FreeRTOS::BinarySemaphore::create();
+				if (!waiter.done) {
 					cleanupStorage();
 					return false;
 				}
 			}
 		}
 
-		queueSpace = xSemaphoreCreateCounting(
-		    static_cast<UBaseType_t>(newConfig.queueSize),
-		    static_cast<UBaseType_t>(newConfig.queueSize)
+		queueSpace = Strata::FreeRTOS::CountingSemaphore::create(
+		    newConfig.queueSize,
+		    newConfig.queueSize
 		);
-		if (queueSpace == nullptr) {
+		if (!queueSpace) {
 			cleanupStorage();
 			return false;
 		}
@@ -283,14 +304,14 @@ struct SignalImpl {
 	}
 
 	void notifyTaskLocked() const {
-		if (taskHandle != nullptr) {
-			xTaskNotifyGive(taskHandle);
+		if (task) {
+			xTaskNotifyGive(task.handle());
 		}
 	}
 
 	void enqueueLocked(SignalEventId eventId, size_t payloadSize, const void *payload) {
 		const size_t index = (queueHead + queueCount) % config.queueSize;
-		SignalQueuedEvent &slot = queue[index];
+		SignalQueuedEvent &slot = (*queue)[index];
 		slot.eventId = eventId;
 		slot.payloadSize = payloadSize;
 		slot.sequence = nextSequence++;
@@ -301,17 +322,17 @@ struct SignalImpl {
 	}
 
 	bool popLocked(SignalDispatchEvent &event) {
-		if (queueCount == 0 || queue == nullptr) {
+		if (queueCount == 0 || !queue) {
 			return false;
 		}
 
-		SignalQueuedEvent &slot = queue[queueHead];
+		SignalQueuedEvent &slot = (*queue)[queueHead];
 		event.eventId = slot.eventId;
 		event.payloadSize = slot.payloadSize;
 		event.sequence = slot.sequence;
-		event.payload = slot.payloadSize > 0 ? dispatchPayload : nullptr;
+		event.payload = slot.payloadSize > 0 ? dispatchPayload.data<uint8_t>() : nullptr;
 		if (slot.payloadSize > 0) {
-			memcpy(dispatchPayload, slot.payload, slot.payloadSize);
+			memcpy(dispatchPayload.data(), slot.payload, slot.payloadSize);
 		}
 
 		queueHead = (queueHead + 1) % config.queueSize;
@@ -326,8 +347,11 @@ struct SignalImpl {
 	    SignalStatus status,
 	    const char *message
 	) {
+		if (!waiters) {
+			return;
+		}
 		for (size_t i = 0; i < waiterCapacity; ++i) {
-			SignalWaiterRecord &waiter = waiters[i];
+			SignalWaiterRecord &waiter = (*waiters)[i];
 			if (!waiter.inUse || waiter.completed || waiter.eventId != eventId ||
 			    waiter.payloadSize != payloadSize) {
 				continue;
@@ -338,27 +362,33 @@ struct SignalImpl {
 			waiter.status = status;
 			waiter.message = message != nullptr ? message : "signal wait completed";
 			waiter.completed = true;
-			xSemaphoreGive(waiter.done);
+			waiter.done.give();
 		}
 	}
 
 	void failAllWaitersLocked(SignalStatus status, const char *message) {
+		if (!waiters) {
+			return;
+		}
 		for (size_t i = 0; i < waiterCapacity; ++i) {
-			SignalWaiterRecord &waiter = waiters[i];
+			SignalWaiterRecord &waiter = (*waiters)[i];
 			if (!waiter.inUse || waiter.completed) {
 				continue;
 			}
 			waiter.status = status;
 			waiter.message = message != nullptr ? message : "signal stopped";
 			waiter.completed = true;
-			xSemaphoreGive(waiter.done);
+			waiter.done.give();
 		}
 	}
 
 	SignalWaiterRecord *findFreeWaiterLocked() {
+		if (!waiters) {
+			return nullptr;
+		}
 		for (size_t i = 0; i < waiterCapacity; ++i) {
-			if (!waiters[i].inUse) {
-				return &waiters[i];
+			if (!(*waiters)[i].inUse) {
+				return &(*waiters)[i];
 			}
 		}
 		return nullptr;
@@ -381,9 +411,12 @@ struct SignalImpl {
 	}
 
 	SignalSubscriptionRecord *findFreeSubscriptionLocked() {
+		if (!subscriptions) {
+			return nullptr;
+		}
 		for (size_t i = 0; i < subscriptionCapacity; ++i) {
-			if (subscriptions[i].available()) {
-				return &subscriptions[i];
+			if ((*subscriptions)[i].available()) {
+				return &(*subscriptions)[i];
 			}
 		}
 		return nullptr;
@@ -398,10 +431,10 @@ struct SignalImpl {
 	}
 
 	void finishSubscriptionDispatchLocked(size_t index) {
-		if (index >= subscriptionCapacity) {
+		if (!subscriptions || index >= subscriptionCapacity) {
 			return;
 		}
-		SignalSubscriptionRecord &slot = subscriptions[index];
+		SignalSubscriptionRecord &slot = (*subscriptions)[index];
 		if (slot.dispatchRefs > 0) {
 			slot.dispatchRefs--;
 		}
@@ -411,9 +444,12 @@ struct SignalImpl {
 	}
 
 	size_t collectMatchesLocked(const SignalDispatchEvent &event) {
+		if (!subscriptions || !dispatchMatches) {
+			return 0;
+		}
 		size_t count = 0;
 		for (size_t i = 0; i < subscriptionCapacity && count < subscriptionCapacity; ++i) {
-			SignalSubscriptionRecord &subscription = subscriptions[i];
+			SignalSubscriptionRecord &subscription = (*subscriptions)[i];
 			if (!subscription.active || subscription.eventId != event.eventId ||
 			    subscription.payloadSize != event.payloadSize ||
 			    subscription.kind == SignalCallbackKind::None) {
@@ -424,16 +460,16 @@ struct SignalImpl {
 				continue;
 			}
 			subscription.dispatchRefs++;
-			dispatchMatches[count].index = i;
-			dispatchMatches[count].id = subscription.id;
-			dispatchMatches[count].generation = subscription.generation;
+			(*dispatchMatches)[count].index = i;
+			(*dispatchMatches)[count].id = subscription.id;
+			(*dispatchMatches)[count].generation = subscription.generation;
 			count++;
 		}
 		return count;
 	}
 
 	void observeStackHighWaterLocked() {
-		const size_t current = signal_task_support::currentStackHighWaterMarkBytes();
+		const size_t current = task ? task.stackHighWaterMarkBytes() : 0;
 		if (current > 0 && (stackHighWaterMarkBytes == 0 || current < stackHighWaterMarkBytes)) {
 			stackHighWaterMarkBytes = current;
 		}
@@ -444,8 +480,8 @@ struct SignalImpl {
 		if (!lock || !popLocked(event)) {
 			return false;
 		}
-		if (config.overflowPolicy == SignalOverflowPolicy::BlockCaller && queueSpace != nullptr) {
-			xSemaphoreGive(queueSpace);
+		if (config.overflowPolicy == SignalOverflowPolicy::BlockCaller && queueSpace) {
+			queueSpace.give();
 		}
 		return true;
 	}
@@ -456,19 +492,22 @@ struct SignalImpl {
 	}
 
 	void markTaskStopped() {
-		SignalLock lock(mutex);
-		if (lock) {
-			observeStackHighWaterLocked();
-			taskHandle = nullptr;
+		{
+			SignalLock lock(mutex);
+			if (lock) {
+				observeStackHighWaterLocked();
+			}
 		}
+		taskReadyForDelete.store(true, std::memory_order_release);
 	}
 
 	static void taskEntry(void *arg) {
 		SignalImpl *impl = static_cast<SignalImpl *>(arg);
 		if (impl == nullptr) {
-			vTaskDelete(nullptr);
-			return;
+			suspendForever();
 		}
+
+		ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
 		while (true) {
 			SignalDispatchEvent event;
@@ -482,7 +521,7 @@ struct SignalImpl {
 				}
 
 				for (size_t i = 0; i < matchCount; ++i) {
-					const SignalDispatchMatch match = impl->dispatchMatches[i];
+					const SignalDispatchMatch match = (*impl->dispatchMatches)[i];
 					bool invoked = false;
 					SignalCallbackKind kind = SignalCallbackKind::None;
 					SignalRawCallback rawCallback = nullptr;
@@ -491,13 +530,14 @@ struct SignalImpl {
 
 					{
 						SignalLock lock(impl->mutex);
-						if (!lock || match.index >= impl->subscriptionCapacity) {
+						if (!lock || !impl->subscriptions ||
+						    match.index >= impl->subscriptionCapacity) {
 							if (lock) {
 								impl->dispatchErrorCount++;
 							}
 							continue;
 						}
-						SignalSubscriptionRecord &slot = impl->subscriptions[match.index];
+						SignalSubscriptionRecord &slot = (*impl->subscriptions)[match.index];
 						if (!slot.active || slot.id != match.id ||
 						    slot.generation != match.generation) {
 							impl->finishSubscriptionDispatchLocked(match.index);
@@ -522,9 +562,10 @@ struct SignalImpl {
 						SignalSubscriptionRecord *slot = nullptr;
 						{
 							SignalLock lock(impl->mutex);
-							if (lock && match.index < impl->subscriptionCapacity) {
+							if (lock && impl->subscriptions &&
+							    match.index < impl->subscriptionCapacity) {
 								SignalSubscriptionRecord &candidate =
-								    impl->subscriptions[match.index];
+								    (*impl->subscriptions)[match.index];
 								if (candidate.active && candidate.id == match.id &&
 								    candidate.generation == match.generation &&
 								    candidate.functionCallback) {
@@ -574,9 +615,8 @@ struct SignalImpl {
 			ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 		}
 
-		const bool withCaps = impl->createdWithCaps;
 		impl->markTaskStopped();
-		signal_task_support::deleteCurrentTask(withCaps);
+		suspendForever();
 	}
 };
 
@@ -663,14 +703,16 @@ SignalSubscriptionId SignalSubscriptionHandle::release() {
 	return id;
 }
 
-Signal::Signal() : _impl(new (std::nothrow) SignalImpl()) {
+Signal::Signal() : _impl(Strata::makeUnique<SignalImpl>(Strata::Placement::Internal)) {
 }
 
 Signal::~Signal() {
 	if (_impl == nullptr) {
 		return;
 	}
-	if (_impl->taskHandle != nullptr && xTaskGetCurrentTaskHandle() == _impl->taskHandle) {
+	if (_impl->task && xTaskGetCurrentTaskHandle() == _impl->task.handle()) {
+		// Signal destruction from its own callback cannot safely reclaim the task-owned
+		// static stack. Preserve the existing fail-safe leak behavior for this unsupported case.
 		_impl.release();
 		return;
 	}
@@ -681,7 +723,13 @@ SignalResult Signal::init(const SignalConfig &config) {
 	if (_impl == nullptr) {
 		return allocationFailure();
 	}
-	if (!signal_task_support::isValidStackSize(config.stackSizeBytes)) {
+	if (!_impl->mutex) {
+		return SignalResult::failure(SignalStatus::OutOfMemory, "failed to allocate signal mutex");
+	}
+	if (!Strata::validMemoryPolicy(config.memory)) {
+		return SignalResult::failure(SignalStatus::InvalidArgument, "invalid memory placement");
+	}
+	if (!isValidStackSize(config.stackSizeBytes)) {
 		return SignalResult::failure(
 		    SignalStatus::InvalidArgument,
 		    "stack size must be at least 1024 bytes and aligned"
@@ -730,69 +778,27 @@ SignalResult Signal::init(const SignalConfig &config) {
 			break;
 		}
 		_impl->lifecycle = SignalLifecycleState::Initializing;
+		_impl->taskReadyForDelete.store(false, std::memory_order_release);
 		if (!_impl->allocateStorageLocked(config)) {
 			_impl->cleanupAfterFailedInitLocked();
 			return SignalResult::failure(SignalStatus::OutOfMemory, "failed to allocate signal storage");
 		}
 		_impl->config = config;
-		_impl->createdWithCaps = false;
-		_impl->actualStackType = SignalStackType::Internal;
 		_impl->resetCounters();
 	}
 
-	TaskHandle_t handle = nullptr;
-	bool createdWithCaps = false;
-	SignalStackType actualStackType = SignalStackType::Internal;
-	BaseType_t created = pdFAIL;
-
-	const bool externalStackAvailable = signal_task_support::hasExternalStackSupport();
-	if (config.stackType == SignalStackType::Psram && !externalStackAvailable) {
-		SignalLock lock(_impl->mutex);
-		if (lock) {
-			_impl->cleanupAfterFailedInitLocked();
-		}
-		return SignalResult::failure(
-		    SignalStatus::TaskCreateFailed,
-		    "PSRAM task stacks are not available"
-		);
-	}
-
-	if (config.stackType == SignalStackType::Psram ||
-	    (config.stackType == SignalStackType::Auto && externalStackAvailable)) {
-		created = signal_task_support::createTask(
-		    &SignalImpl::taskEntry,
-		    config.taskName,
-		    config.stackSizeBytes,
-		    _impl.get(),
-		    config.priority,
-		    &handle,
-		    config.coreId,
-		    true,
-		    createdWithCaps
-		);
-		if (created == pdPASS && handle != nullptr) {
-			actualStackType = SignalStackType::Psram;
-		}
-	}
-
-	if ((created != pdPASS || handle == nullptr) && config.stackType != SignalStackType::Psram) {
-		handle = nullptr;
-		createdWithCaps = false;
-		created = signal_task_support::createTask(
-		    &SignalImpl::taskEntry,
-		    config.taskName,
-		    config.stackSizeBytes,
-		    _impl.get(),
-		    config.priority,
-		    &handle,
-		    config.coreId,
-		    false,
-		    createdWithCaps
-		);
-		actualStackType = SignalStackType::Internal;
-	}
-
-	if (created != pdPASS || handle == nullptr) {
+	auto task = Strata::FreeRTOS::Task::create(
+	    &SignalImpl::taskEntry,
+	    _impl.get(),
+	    Strata::FreeRTOS::TaskConfig{
+	        .name = config.taskName,
+	        .stackBytes = config.stackSizeBytes,
+	        .stackPlacement = config.memory.taskStack,
+	        .priority = config.priority,
+	        .affinity = config.coreId,
+	    }
+	);
+	if (!task) {
 		SignalLock lock(_impl->mutex);
 		if (lock) {
 			_impl->cleanupAfterFailedInitLocked();
@@ -803,12 +809,12 @@ SignalResult Signal::init(const SignalConfig &config) {
 	{
 		SignalLock lock(_impl->mutex);
 		if (!lock) {
+			task.reset();
 			return SignalResult::failure(SignalStatus::InternalError, "failed to lock signal");
 		}
-		_impl->taskHandle = handle;
-		_impl->createdWithCaps = createdWithCaps;
-		_impl->actualStackType = actualStackType;
+		_impl->task = std::move(task);
 		_impl->lifecycle = SignalLifecycleState::Running;
+		xTaskNotifyGive(_impl->task.handle());
 	}
 
 	return SignalResult::success("signal initialized");
@@ -830,7 +836,7 @@ SignalResult Signal::end(uint32_t timeoutMs) {
 		if (_impl->lifecycle == SignalLifecycleState::Initializing) {
 			return SignalResult::failure(SignalStatus::Busy, "signal initialization is in progress");
 		}
-		if (_impl->taskHandle != nullptr && xTaskGetCurrentTaskHandle() == _impl->taskHandle) {
+		if (_impl->task && xTaskGetCurrentTaskHandle() == _impl->task.handle()) {
 			return SignalResult::failure(
 			    SignalStatus::InvalidArgument,
 			    "end cannot be called from the signal task"
@@ -851,10 +857,13 @@ SignalResult Signal::end(uint32_t timeoutMs) {
 				return SignalResult::success("signal ended");
 			}
 			if (lock && _impl->isStoppingLocked() && _impl->canCleanupLocked()) {
+				if (_impl->task) {
+					vTaskSuspend(_impl->task.handle());
+					_impl->task.reset();
+				}
 				_impl->cleanupStorage();
 				_impl->lifecycle = SignalLifecycleState::Stopped;
-				_impl->createdWithCaps = false;
-				_impl->actualStackType = SignalStackType::Internal;
+				_impl->taskReadyForDelete.store(false, std::memory_order_release);
 				return SignalResult::success("signal ended");
 			}
 		}
@@ -1077,7 +1086,7 @@ SignalResult Signal::unsubscribe(SignalSubscriptionId id) {
 	}
 
 	for (size_t i = 0; i < _impl->subscriptionCapacity; ++i) {
-		SignalSubscriptionRecord &slot = _impl->subscriptions[i];
+		SignalSubscriptionRecord &slot = (*_impl->subscriptions)[i];
 		if (!slot.active || slot.id != id) {
 			continue;
 		}
@@ -1121,7 +1130,7 @@ SignalResult Signal::postRaw(
 
 	uint32_t effectiveTimeout = timeoutMs;
 	SignalOverflowPolicy overflowPolicy = SignalOverflowPolicy::DropNewest;
-	SemaphoreHandle_t queueSpace = nullptr;
+	Strata::FreeRTOS::CountingSemaphore *queueSpace = nullptr;
 	bool calledFromSignalTask = false;
 	{
 		SignalLock lock(_impl->mutex);
@@ -1163,8 +1172,8 @@ SignalResult Signal::postRaw(
 			return SignalResult::success("signal event queued");
 		}
 
-		queueSpace = _impl->queueSpace;
-		if (queueSpace == nullptr) {
+		queueSpace = &_impl->queueSpace;
+		if (!*queueSpace) {
 			_impl->dispatchErrorCount++;
 			return SignalResult::failure(
 			    SignalStatus::InternalError,
@@ -1172,12 +1181,12 @@ SignalResult Signal::postRaw(
 			);
 		}
 		calledFromSignalTask =
-		    _impl->taskHandle != nullptr && xTaskGetCurrentTaskHandle() == _impl->taskHandle;
+		    _impl->task && xTaskGetCurrentTaskHandle() == _impl->task.handle();
 		_impl->activePostOperations++;
 	}
 
 	const TickType_t waitTicks = calledFromSignalTask ? 0 : timeoutToTicks(effectiveTimeout);
-	if (xSemaphoreTake(queueSpace, waitTicks) != pdTRUE) {
+	if (!queueSpace->take(waitTicks)) {
 		SignalLock lock(_impl->mutex);
 		if (lock) {
 			_impl->droppedCount++;
@@ -1199,19 +1208,19 @@ SignalResult Signal::postRaw(
 	{
 		SignalLock lock(_impl->mutex);
 		if (!lock) {
-			xSemaphoreGive(queueSpace);
+			queueSpace->give();
 			return SignalResult::failure(SignalStatus::InternalError, "failed to lock signal");
 		}
 		if (!_impl->isRunningLocked()) {
-			xSemaphoreGive(queueSpace);
+			queueSpace->give();
 			_impl->rejectedCount++;
 			result = SignalResult::failure(SignalStatus::NotInitialized, "signal is not initialized");
 		} else if (payloadSize > _impl->config.maxPayloadSize) {
-			xSemaphoreGive(queueSpace);
+			queueSpace->give();
 			_impl->rejectedCount++;
 			result = SignalResult::failure(SignalStatus::InvalidArgument, "payload is too large");
 		} else if (_impl->queueCount >= _impl->config.queueSize) {
-			xSemaphoreGive(queueSpace);
+			queueSpace->give();
 			_impl->dispatchErrorCount++;
 			result = SignalResult::failure(
 			    SignalStatus::InternalError,
@@ -1255,7 +1264,7 @@ SignalResult Signal::waitForRaw(
 	}
 
 	SignalWaiterRecord *waiter = nullptr;
-	SemaphoreHandle_t done = nullptr;
+	Strata::FreeRTOS::BinarySemaphore *done = nullptr;
 	{
 		SignalLock lock(_impl->mutex);
 		if (!lock) {
@@ -1265,7 +1274,7 @@ SignalResult Signal::waitForRaw(
 			_impl->rejectedCount++;
 			return SignalResult::failure(SignalStatus::NotInitialized, "signal is not initialized");
 		}
-		if (_impl->taskHandle != nullptr && xTaskGetCurrentTaskHandle() == _impl->taskHandle) {
+		if (_impl->task && xTaskGetCurrentTaskHandle() == _impl->task.handle()) {
 			_impl->rejectedCount++;
 			return SignalResult::failure(
 			    SignalStatus::InvalidArgument,
@@ -1281,7 +1290,7 @@ SignalResult Signal::waitForRaw(
 			_impl->rejectedCount++;
 			return SignalResult::failure(SignalStatus::TooManyWaiters, "maximum waiters reached");
 		}
-		xSemaphoreTake(waiter->done, 0);
+		waiter->done.tryTake();
 		waiter->eventId = eventId;
 		waiter->payloadSize = payloadSize;
 		waiter->payloadOut = payloadOut;
@@ -1290,10 +1299,10 @@ SignalResult Signal::waitForRaw(
 		waiter->status = SignalStatus::Timeout;
 		waiter->message = "signal wait timed out";
 		_impl->activeWaiterCount++;
-		done = waiter->done;
+		done = &waiter->done;
 	}
 
-	xSemaphoreTake(done, timeoutToTicks(timeoutMs));
+	done->take(timeoutToTicks(timeoutMs));
 
 	SignalResult result;
 	{
@@ -1334,9 +1343,27 @@ SignalDiag Signal::getDiagnostics() {
 	diag.subscriptionCount = _impl->activeSubscriptionCount;
 	diag.waiterCount = _impl->activeWaiterCount;
 	diag.dispatchErrorCount = _impl->dispatchErrorCount;
-	diag.stackHighWaterMarkBytes = _impl->stackHighWaterMarkBytes;
-	diag.requestedStackType = _impl->config.stackType;
-	diag.actualStackType = _impl->actualStackType;
+	diag.stackHighWaterMarkBytes =
+	    _impl->task ? _impl->task.stackHighWaterMarkBytes() : _impl->stackHighWaterMarkBytes;
+	diag.taskStackPlacement =
+	    _impl->task ? _impl->task.stackPlacement() : _impl->config.memory.taskStack;
+	diag.taskStackRegion =
+	    _impl->task ? _impl->task.stackRegion() : Strata::Region::Unknown;
+	diag.allocationPlacement = _impl->config.memory.allocation;
+	diag.queueStorageRegion =
+	    _impl->queue && !_impl->queue->empty()
+	        ? Strata::regionOf(_impl->queue->data())
+	        : Strata::Region::Unknown;
+	diag.queuePayloadRegion = _impl->queuePayloadStorage.region();
+	diag.dispatchPayloadRegion = _impl->dispatchPayload.region();
+	diag.subscriptionStorageRegion =
+	    _impl->subscriptions && !_impl->subscriptions->empty()
+	        ? Strata::regionOf(_impl->subscriptions->data())
+	        : Strata::Region::Unknown;
+	diag.waiterStorageRegion =
+	    _impl->waiters && !_impl->waiters->empty()
+	        ? Strata::regionOf(_impl->waiters->data())
+	        : Strata::Region::Unknown;
 	return diag;
 }
 
