@@ -55,7 +55,9 @@ void testConcurrentInitIsSerialized() {
 	SignalResult second;
 
 	std::thread firstThread([&]() { first = bus.init(); });
-	std::this_thread::sleep_for(5ms);
+	CHECK(waitUntil([&]() {
+		return fake_freertos::taskCreateCount() + fake_freertos::capsTaskCreateCount() == 1;
+	}));
 	std::thread secondThread([&]() { second = bus.init(); });
 	firstThread.join();
 	secondThread.join();
