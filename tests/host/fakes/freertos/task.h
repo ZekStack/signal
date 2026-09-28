@@ -6,27 +6,30 @@
 extern "C" {
 #endif
 
-BaseType_t xTaskCreate(
+TaskHandle_t xTaskCreateStatic(
     TaskFunction_t entry,
     const char *name,
-    uint32_t stackDepth,
+    configSTACK_DEPTH_TYPE stackDepth,
     void *arg,
     UBaseType_t priority,
-    TaskHandle_t *handle
+    StackType_t *stack,
+    StaticTask_t *controlBlock
 );
-BaseType_t xTaskCreatePinnedToCore(
+TaskHandle_t xTaskCreateStaticPinnedToCore(
     TaskFunction_t entry,
     const char *name,
-    uint32_t stackDepth,
+    configSTACK_DEPTH_TYPE stackDepth,
     void *arg,
     UBaseType_t priority,
-    TaskHandle_t *handle,
+    StackType_t *stack,
+    StaticTask_t *controlBlock,
     BaseType_t coreId
 );
 TaskHandle_t xTaskGetCurrentTaskHandle(void);
 BaseType_t xTaskNotifyGive(TaskHandle_t handle);
 uint32_t ulTaskNotifyTake(BaseType_t clearCountOnExit, TickType_t timeout);
 void vTaskDelay(TickType_t ticks);
+void vTaskSuspend(TaskHandle_t handle);
 void vTaskDelete(TaskHandle_t handle);
 UBaseType_t uxTaskGetStackHighWaterMark(TaskHandle_t handle);
 
