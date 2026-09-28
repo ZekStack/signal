@@ -4,11 +4,7 @@ on:
   pull_request:
   push:
     branches:
-      - main
-
-concurrency:
-  group: signal-lint-${{ github.ref }}
-  cancel-in-progress: false
+      - '**'
 
 permissions:
   contents: read
