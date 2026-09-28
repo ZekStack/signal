@@ -36,6 +36,6 @@ Queued callbacks, active waiter tasks, or blocked producers may still be drainin
 
 Use `subscribeRaw()` with a function pointer and context pointer. Lambda, `std::bind`, and `std::function` subscriptions are convenience APIs and may allocate during `subscribe()`.
 
-## `Auto` reports an internal stack
+## `PreferExternal` reports an internal region
 
-`SignalStackType::Auto` first tries PSRAM when supported, then falls back to internal RAM if external task creation fails. Inspect `SignalDiag::requestedStackType` and `actualStackType` to see which path was used.
+`Strata::Placement::PreferExternal` allows fallback to internal memory. Inspect `SignalDiag::taskStackPlacement` and `taskStackRegion` to distinguish the requested policy from the observed region. Use `RequireExternal` only when fallback must be rejected.
