@@ -39,7 +39,7 @@ build_unflags =
 
 Signal is not published to Arduino Library Manager yet.
 
-Install it by downloading the repository ZIP or cloning it into your Arduino libraries folder.
+Install Signal and its Strata dependency by downloading/cloning both repositories into your Arduino libraries folder. PlatformIO resolves the pinned Strata dependency from `library.json` automatically.
 
 ```txt
 Arduino/libraries/Signal
@@ -159,7 +159,7 @@ For the full API, see [`docs/api.md`](docs/api.md).
 | PSRAM | Optional through Strata placement for task stacks and movable Signal-owned storage |
 | Dependencies | none |
 | Exceptions | Not used |
-| Status | `0.1.0` release candidate |
+| Status | `0.2.0` Strata migration |
 
 ## License
 
