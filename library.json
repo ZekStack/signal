@@ -1,6 +1,6 @@
 {
   "name": "Signal",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Event bus and publish-subscribe library for ESP32.",
   "keywords": [
     "esp32",
@@ -21,6 +21,9 @@
   ],
   "license": "MIT",
   "frameworks": "arduino",
+  "dependencies": {
+    "Strata": "https://github.com/ZekStack/strata.git#5bc7a67c8a06487e9d9ecef265f6c24539c28441"
+  },
   "platforms": "espressif32",
   "build": {
     "srcDir": "src",
