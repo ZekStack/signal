@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.0
+
+- Migrate Signal-owned memory and FreeRTOS primitives to Strata.
+- Replace `SignalStackType` with the shared `Strata::MemoryPolicy` and placement vocabulary.
+- Move the dispatcher task, recursive mutex, waiter semaphores, and queue-space counting semaphore to Strata RAII ownership.
+- Place queue, payload, dispatch, subscription, and waiter storage through `memory.allocation`.
+- Adopt external task reaping so Strata-owned static task stacks are never self-deleted.
+- Expand diagnostics with requested placement and observed memory regions.
+- Add Worker-style CI ownership audits and pin validation to the Strata counting-semaphore commit.
+
+
 All notable changes to Signal are documented in this file.
 
 ## 0.1.0
