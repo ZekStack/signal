@@ -17,6 +17,9 @@ void printDiagnostics() {
 	Serial.printf("queue=%u/%u\n", static_cast<unsigned>(diag.queueUsed), static_cast<unsigned>(diag.queueSize));
 	Serial.printf("subscriptions=%u\n", static_cast<unsigned>(diag.subscriptionCount));
 	Serial.printf("waiters=%u\n", static_cast<unsigned>(diag.waiterCount));
+	Serial.printf("stack-placement=%s\n", Strata::toString(diag.taskStackPlacement));
+	Serial.printf("stack-region=%s\n", Strata::toString(diag.taskStackRegion));
+	Serial.printf("queue-region=%s\n", Strata::toString(diag.queueStorageRegion));
 }
 
 void setup() {
