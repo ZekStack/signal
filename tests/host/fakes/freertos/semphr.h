@@ -6,6 +6,7 @@
 extern "C" {
 #endif
 
+SemaphoreHandle_t xSemaphoreCreateMutexStatic(StaticSemaphore_t *controlBlock);
 SemaphoreHandle_t xSemaphoreCreateRecursiveMutexStatic(StaticSemaphore_t *controlBlock);
 SemaphoreHandle_t xSemaphoreCreateBinaryStatic(StaticSemaphore_t *controlBlock);
 SemaphoreHandle_t xSemaphoreCreateCountingStatic(
