@@ -13,6 +13,7 @@
 
 struct FakeSemaphore {
 	enum class Kind {
+		Mutex,
 		Recursive,
 		Binary,
 		Counting,
@@ -114,6 +115,17 @@ uint32_t taskCreateCount() {
 } // namespace fake_freertos
 
 extern "C" {
+SemaphoreHandle_t xSemaphoreCreateMutexStatic(StaticSemaphore_t *controlBlock) {
+	if (controlBlock == nullptr) {
+		return nullptr;
+	}
+	auto *semaphore = new FakeSemaphore();
+	semaphore->kind = FakeSemaphore::Kind::Mutex;
+	semaphore->maxCount = 1;
+	semaphore->count = 1;
+	return semaphore;
+}
+
 SemaphoreHandle_t xSemaphoreCreateRecursiveMutexStatic(StaticSemaphore_t *controlBlock) {
 	if (controlBlock == nullptr) {
 		return nullptr;
