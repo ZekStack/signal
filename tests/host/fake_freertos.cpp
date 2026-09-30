@@ -112,6 +112,10 @@ void setTaskCreateDelayMs(uint32_t milliseconds) {
 uint32_t taskCreateCount() {
 	return taskCreates.load();
 }
+
+uint32_t capsTaskCreateCount() {
+	return 0;
+}
 } // namespace fake_freertos
 
 extern "C" {
