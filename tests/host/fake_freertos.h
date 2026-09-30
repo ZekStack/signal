@@ -7,4 +7,5 @@ void reset();
 void failNextTaskCreates(uint32_t count);
 void setTaskCreateDelayMs(uint32_t milliseconds);
 uint32_t taskCreateCount();
+uint32_t capsTaskCreateCount();
 }
