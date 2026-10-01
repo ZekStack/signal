@@ -12,10 +12,11 @@ void setup() {
 	delay(200);
 
 	SignalConfig config;
+	config.memory.allocation = Strata::Placement::Default;
+	config.memory.taskStack = Strata::Placement::PreferExternal;
 	config.stackSizeBytes = 4096;
 	config.priority = 1;
 	config.coreId = tskNO_AFFINITY;
-	config.stackType = SignalStackType::Auto;
 	config.queueSize = 20;
 	config.maxPayloadSize = 128;
 	config.maxSubscriptions = 32;

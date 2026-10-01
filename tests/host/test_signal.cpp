@@ -80,34 +80,55 @@ void testFailedInitCanBeRetried() {
 	CHECK(bus.end(1000));
 }
 
-void testPsramAutoFallback() {
+void testStrataTaskPlacement() {
 	fake_freertos::reset();
-	fake_freertos::setPsramBytes(1024 * 1024);
-	fake_freertos::failNextCapsTaskCreates(1);
 	Signal bus;
 	SignalConfig config;
-	config.stackType = SignalStackType::Auto;
+	config.memory.taskStack = Strata::Placement::PreferExternal;
 	CHECK(bus.init(config));
 	SignalDiag diag = bus.getDiagnostics();
-	CHECK(diag.requestedStackType == SignalStackType::Auto);
-	CHECK(diag.actualStackType == SignalStackType::Internal);
-	CHECK(fake_freertos::capsTaskCreateCount() == 1);
+	CHECK(diag.taskStackPlacement == Strata::Placement::PreferExternal);
+	CHECK(diag.allocationPlacement == Strata::Placement::Default);
 	CHECK(fake_freertos::taskCreateCount() == 1);
 	CHECK(bus.end(1000));
 }
 
-void testExplicitPsramDoesNotFallback() {
+void testRequireExternalTaskStackDoesNotFallback() {
 	fake_freertos::reset();
-	fake_freertos::setPsramBytes(1024 * 1024);
-	fake_freertos::failNextCapsTaskCreates(1);
 	Signal bus;
 	SignalConfig config;
-	config.stackType = SignalStackType::Psram;
+	config.memory.taskStack = Strata::Placement::RequireExternal;
 	SignalResult result = bus.init(config);
 	CHECK(!result);
 	CHECK(result.status == SignalStatus::TaskCreateFailed);
-	CHECK(fake_freertos::capsTaskCreateCount() == 1);
 	CHECK(fake_freertos::taskCreateCount() == 0);
+}
+
+void testInvalidMemoryPolicyIsRejected() {
+	fake_freertos::reset();
+	Signal bus;
+	SignalConfig config;
+	config.memory.taskStack = static_cast<Strata::Placement>(0xFF);
+	SignalResult result = bus.init(config);
+	CHECK(!result);
+	CHECK(result.status == SignalStatus::InvalidArgument);
+	CHECK(fake_freertos::taskCreateCount() == 0);
+}
+
+void testRequiredExternalStorageFailureCanBeRetried() {
+	fake_freertos::reset();
+	Signal bus;
+	SignalConfig config;
+	config.memory.allocation = Strata::Placement::RequireExternal;
+
+	SignalResult failed = bus.init(config);
+	CHECK(!failed);
+	CHECK(failed.status == SignalStatus::OutOfMemory);
+	CHECK(fake_freertos::taskCreateCount() == 0);
+
+	config.memory.allocation = Strata::Placement::Default;
+	CHECK(bus.init(config));
+	CHECK(bus.end(1000));
 }
 
 void testCallbackBlockingPostReturnsBusy() {
@@ -313,8 +334,10 @@ void testLiveStackDiagnostics() {
 int main() {
 	testConcurrentInitIsSerialized();
 	testFailedInitCanBeRetried();
-	testPsramAutoFallback();
-	testExplicitPsramDoesNotFallback();
+	testStrataTaskPlacement();
+	testRequireExternalTaskStackDoesNotFallback();
+	testInvalidMemoryPolicyIsRejected();
+	testRequiredExternalStorageFailureCanBeRetried();
 	testCallbackBlockingPostReturnsBusy();
 	testBlockedProducerDrainsBeforeShutdownCleanup();
 	testEndTimeoutCanBeCompletedLater();

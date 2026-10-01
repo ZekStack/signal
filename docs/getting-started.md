@@ -16,7 +16,7 @@ build_unflags =
   -std=gnu++11
 ```
 
-Arduino IDE users can install the repository into `Arduino/libraries/Signal`.
+Arduino IDE users should install Signal into `Arduino/libraries/Signal` and install the pinned Strata dependency alongside it as `Arduino/libraries/Strata`. PlatformIO resolves Strata from `library.json` automatically.
 
 ## Create a bus
 

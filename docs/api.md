@@ -117,8 +117,8 @@ Payload types must be trivially copyable. Typed callback reconstruction uses C++
 SignalDiag diag = bus.getDiagnostics();
 ```
 
-Diagnostics include posted, processed, callback, dropped, rejected, queue usage, subscription count, waiter count, dispatch errors, and task stack high-water mark.
+Diagnostics include posted, processed, callback, dropped, rejected, queue usage, subscription count, waiter count, dispatch errors, task stack high-water mark, requested Strata placement, and observed memory regions.
 
 Use `processedEventCount` for dequeued events and `callbackInvokeCount` for actual callback calls. `dispatchedCount` remains as a compatibility alias for processed events.
 
-`stackHighWaterMarkBytes` is the minimum observed remaining stack space for the running Signal task. It is sampled while the task is active and again during shutdown.
+`stackHighWaterMarkBytes` is the minimum observed remaining stack space for the running Signal task. `taskStackPlacement` reports the requested Strata policy, while `taskStackRegion` reports the observed task-stack region. Queue, queue-payload, dispatch-payload, dispatch-match, subscription, and waiter storage expose their observed regions independently because `PreferExternal` may fall back per allocation.

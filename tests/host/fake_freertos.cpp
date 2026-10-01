@@ -1,10 +1,8 @@
 #include "fake_freertos.h"
 
 #include <freertos/FreeRTOS.h>
-#include <freertos/idf_additions.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
-#include <esp_heap_caps.h>
 
 #include <atomic>
 #include <chrono>
@@ -15,7 +13,9 @@
 
 struct FakeSemaphore {
 	enum class Kind {
+		Mutex,
 		Recursive,
+		Binary,
 		Counting,
 	};
 
@@ -36,11 +36,8 @@ struct FakeTask {
 
 namespace {
 thread_local FakeTask *currentTask = nullptr;
-std::atomic<size_t> psramBytes{0};
 std::atomic<uint32_t> failTaskCreates{0};
-std::atomic<uint32_t> failCapsTaskCreates{0};
 std::atomic<uint32_t> taskCreates{0};
-std::atomic<uint32_t> capsTaskCreates{0};
 std::atomic<uint32_t> taskCreateDelayMs{0};
 
 bool consumeFailure(std::atomic<uint32_t> &counter) {
@@ -73,27 +70,13 @@ bool waitFor(
 	return cv.wait_for(lock, std::chrono::milliseconds(timeout), predicate);
 }
 
-BaseType_t createTask(
-    TaskFunction_t entry,
-    void *arg,
-    TaskHandle_t *handle,
-    bool withCaps
-) {
-	if (handle == nullptr || entry == nullptr) {
-		return pdFAIL;
+TaskHandle_t createTask(TaskFunction_t entry, void *arg) {
+	if (entry == nullptr) {
+		return nullptr;
 	}
-	if (withCaps) {
-		capsTaskCreates.fetch_add(1);
-		if (consumeFailure(failCapsTaskCreates)) {
-			*handle = nullptr;
-			return pdFAIL;
-		}
-	} else {
-		taskCreates.fetch_add(1);
-		if (consumeFailure(failTaskCreates)) {
-			*handle = nullptr;
-			return pdFAIL;
-		}
+	taskCreates.fetch_add(1);
+	if (consumeFailure(failTaskCreates)) {
+		return nullptr;
 	}
 
 	const uint32_t delayMs = taskCreateDelayMs.load();
@@ -102,36 +85,24 @@ BaseType_t createTask(
 	}
 
 	auto *task = new FakeTask();
-	*handle = task;
 	std::thread([task, entry, arg]() {
 		currentTask = task;
 		entry(arg);
 		currentTask = nullptr;
 	}).detach();
-	return pdPASS;
+	return task;
 }
 } // namespace
 
 namespace fake_freertos {
 void reset() {
-	psramBytes.store(0);
 	failTaskCreates.store(0);
-	failCapsTaskCreates.store(0);
 	taskCreates.store(0);
-	capsTaskCreates.store(0);
 	taskCreateDelayMs.store(0);
-}
-
-void setPsramBytes(size_t bytes) {
-	psramBytes.store(bytes);
 }
 
 void failNextTaskCreates(uint32_t count) {
 	failTaskCreates.store(count);
-}
-
-void failNextCapsTaskCreates(uint32_t count) {
-	failCapsTaskCreates.store(count);
 }
 
 void setTaskCreateDelayMs(uint32_t milliseconds) {
@@ -143,27 +114,48 @@ uint32_t taskCreateCount() {
 }
 
 uint32_t capsTaskCreateCount() {
-	return capsTaskCreates.load();
+	return 0;
 }
 } // namespace fake_freertos
 
 extern "C" {
-SemaphoreHandle_t xSemaphoreCreateRecursiveMutex(void) {
+SemaphoreHandle_t xSemaphoreCreateMutexStatic(StaticSemaphore_t *controlBlock) {
+	if (controlBlock == nullptr) {
+		return nullptr;
+	}
+	auto *semaphore = new FakeSemaphore();
+	semaphore->kind = FakeSemaphore::Kind::Mutex;
+	semaphore->maxCount = 1;
+	semaphore->count = 1;
+	return semaphore;
+}
+
+SemaphoreHandle_t xSemaphoreCreateRecursiveMutexStatic(StaticSemaphore_t *controlBlock) {
+	if (controlBlock == nullptr) {
+		return nullptr;
+	}
 	auto *semaphore = new FakeSemaphore();
 	semaphore->kind = FakeSemaphore::Kind::Recursive;
 	return semaphore;
 }
 
-SemaphoreHandle_t xSemaphoreCreateBinary(void) {
+SemaphoreHandle_t xSemaphoreCreateBinaryStatic(StaticSemaphore_t *controlBlock) {
+	if (controlBlock == nullptr) {
+		return nullptr;
+	}
 	auto *semaphore = new FakeSemaphore();
-	semaphore->kind = FakeSemaphore::Kind::Counting;
+	semaphore->kind = FakeSemaphore::Kind::Binary;
 	semaphore->maxCount = 1;
 	semaphore->count = 0;
 	return semaphore;
 }
 
-SemaphoreHandle_t xSemaphoreCreateCounting(UBaseType_t maxCount, UBaseType_t initialCount) {
-	if (maxCount == 0 || initialCount > maxCount) {
+SemaphoreHandle_t xSemaphoreCreateCountingStatic(
+    UBaseType_t maxCount,
+    UBaseType_t initialCount,
+    StaticSemaphore_t *controlBlock
+) {
+	if (controlBlock == nullptr || maxCount == 0 || initialCount > maxCount) {
 		return nullptr;
 	}
 	auto *semaphore = new FakeSemaphore();
@@ -208,7 +200,7 @@ BaseType_t xSemaphoreGiveRecursive(SemaphoreHandle_t handle) {
 }
 
 BaseType_t xSemaphoreTake(SemaphoreHandle_t handle, TickType_t timeout) {
-	if (handle == nullptr || handle->kind != FakeSemaphore::Kind::Counting) {
+	if (handle == nullptr || handle->kind == FakeSemaphore::Kind::Recursive) {
 		return pdFALSE;
 	}
 	std::unique_lock lock(handle->mutex);
@@ -220,7 +212,7 @@ BaseType_t xSemaphoreTake(SemaphoreHandle_t handle, TickType_t timeout) {
 }
 
 BaseType_t xSemaphoreGive(SemaphoreHandle_t handle) {
-	if (handle == nullptr || handle->kind != FakeSemaphore::Kind::Counting) {
+	if (handle == nullptr || handle->kind == FakeSemaphore::Kind::Recursive) {
 		return pdFALSE;
 	}
 	std::lock_guard lock(handle->mutex);
@@ -232,44 +224,65 @@ BaseType_t xSemaphoreGive(SemaphoreHandle_t handle) {
 	return pdTRUE;
 }
 
+BaseType_t xSemaphoreTakeFromISR(
+    SemaphoreHandle_t handle,
+    BaseType_t *higherPriorityTaskWoken
+) {
+	if (xSemaphoreTake(handle, 0) != pdTRUE) {
+		return pdFALSE;
+	}
+	if (higherPriorityTaskWoken != nullptr) {
+		*higherPriorityTaskWoken = pdTRUE;
+	}
+	return pdTRUE;
+}
+
+BaseType_t xSemaphoreGiveFromISR(
+    SemaphoreHandle_t handle,
+    BaseType_t *higherPriorityTaskWoken
+) {
+	if (xSemaphoreGive(handle) != pdTRUE) {
+		return pdFALSE;
+	}
+	if (higherPriorityTaskWoken != nullptr) {
+		*higherPriorityTaskWoken = pdTRUE;
+	}
+	return pdTRUE;
+}
+
 void vSemaphoreDelete(SemaphoreHandle_t handle) {
 	delete handle;
 }
 
-BaseType_t xTaskCreate(
-    TaskFunction_t entry,
-    const char *,
-    uint32_t,
-    void *arg,
-    UBaseType_t,
-    TaskHandle_t *handle
-) {
-	return createTask(entry, arg, handle, false);
-}
-
-BaseType_t xTaskCreatePinnedToCore(
-    TaskFunction_t entry,
-    const char *,
-    uint32_t,
-    void *arg,
-    UBaseType_t,
-    TaskHandle_t *handle,
-    BaseType_t
-) {
-	return createTask(entry, arg, handle, false);
-}
-
-BaseType_t xTaskCreatePinnedToCoreWithCaps(
+TaskHandle_t xTaskCreateStatic(
     TaskFunction_t entry,
     const char *,
     configSTACK_DEPTH_TYPE,
     void *arg,
     UBaseType_t,
-    TaskHandle_t *handle,
-    BaseType_t,
-    UBaseType_t
+    StackType_t *,
+    StaticTask_t *controlBlock
 ) {
-	return createTask(entry, arg, handle, true);
+	if (controlBlock == nullptr) {
+		return nullptr;
+	}
+	return createTask(entry, arg);
+}
+
+TaskHandle_t xTaskCreateStaticPinnedToCore(
+    TaskFunction_t entry,
+    const char *,
+    configSTACK_DEPTH_TYPE,
+    void *arg,
+    UBaseType_t,
+    StackType_t *,
+    StaticTask_t *controlBlock,
+    BaseType_t
+) {
+	if (controlBlock == nullptr) {
+		return nullptr;
+	}
+	return createTask(entry, arg);
 }
 
 TaskHandle_t xTaskGetCurrentTaskHandle(void) {
@@ -307,17 +320,16 @@ void vTaskDelay(TickType_t ticks) {
 	std::this_thread::sleep_for(std::chrono::milliseconds(ticks));
 }
 
-void vTaskDelete(TaskHandle_t) {
+void vTaskSuspend(TaskHandle_t) {
 }
 
-void vTaskDeleteWithCaps(TaskHandle_t) {
+void vTaskDelete(TaskHandle_t handle) {
+	if (handle != nullptr) {
+		delete handle;
+	}
 }
 
 UBaseType_t uxTaskGetStackHighWaterMark(TaskHandle_t) {
 	return 1024;
-}
-
-size_t heap_caps_get_total_size(uint32_t caps) {
-	return (caps & MALLOC_CAP_SPIRAM) != 0 ? psramBytes.load() : 0;
 }
 }
