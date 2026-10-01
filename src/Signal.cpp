@@ -8,7 +8,8 @@
 #include <atomic>
 #include <cstring>
 #include <limits>
-#include <optional>
+#include <memory>
+#include <type_traits>
 #include <utility>
 
 namespace zek::signal {
@@ -146,10 +147,97 @@ struct SignalDispatchMatch {
 	uint32_t generation = 0;
 };
 
-using SignalQueuedEvents = Strata::Vector<SignalQueuedEvent>;
-using SignalDispatchMatches = Strata::Vector<SignalDispatchMatch>;
-using SignalSubscriptions = Strata::Vector<SignalSubscriptionRecord>;
-using SignalWaiters = Strata::Vector<SignalWaiterRecord>;
+template <typename T>
+class SignalArray {
+	static_assert(std::is_nothrow_default_constructible_v<T>);
+	static_assert(std::is_nothrow_destructible_v<T>);
+
+  public:
+	SignalArray() noexcept = default;
+
+	~SignalArray() noexcept {
+		reset();
+	}
+
+	SignalArray(const SignalArray &) = delete;
+	SignalArray &operator=(const SignalArray &) = delete;
+
+	[[nodiscard]] bool allocate(
+	    size_t count,
+	    Strata::Placement placement
+	) noexcept {
+		reset();
+		if (count == 0) {
+			return true;
+		}
+		if (count > std::numeric_limits<size_t>::max() / sizeof(T)) {
+			return false;
+		}
+
+		Strata::Buffer storage(count * sizeof(T), placement);
+		auto *data = storage.data<T>();
+		if (data == nullptr) {
+			return false;
+		}
+
+		for (size_t i = 0; i < count; ++i) {
+			std::construct_at(data + i);
+		}
+
+		storage_ = std::move(storage);
+		size_ = count;
+		return true;
+	}
+
+	void reset() noexcept {
+		auto *items = data();
+		for (size_t i = size_; i > 0; --i) {
+			std::destroy_at(items + (i - 1));
+		}
+		size_ = 0;
+		storage_.reset();
+	}
+
+	[[nodiscard]] T *data() noexcept {
+		return storage_.data<T>();
+	}
+
+	[[nodiscard]] const T *data() const noexcept {
+		return storage_.data<T>();
+	}
+
+	[[nodiscard]] size_t size() const noexcept {
+		return size_;
+	}
+
+	[[nodiscard]] bool empty() const noexcept {
+		return size_ == 0;
+	}
+
+	[[nodiscard]] explicit operator bool() const noexcept {
+		return data() != nullptr;
+	}
+
+	T &operator[](size_t index) noexcept {
+		return data()[index];
+	}
+
+	const T &operator[](size_t index) const noexcept {
+		return data()[index];
+	}
+
+	T *begin() noexcept {
+		return data();
+	}
+
+	T *end() noexcept {
+		return data() + size_;
+	}
+
+  private:
+	Strata::Buffer storage_;
+	size_t size_ = 0;
+};
 
 struct SignalImpl {
 	SignalImpl() noexcept : mutex(Strata::FreeRTOS::RecursiveMutex::create()) {
@@ -157,16 +245,16 @@ struct SignalImpl {
 
 	SignalConfig config{};
 	Strata::FreeRTOS::RecursiveMutex mutex;
-	std::optional<SignalQueuedEvents> queue;
+	SignalArray<SignalQueuedEvent> queue;
 	Strata::Buffer queuePayloadStorage;
 	Strata::Buffer dispatchPayload;
-	std::optional<SignalDispatchMatches> dispatchMatches;
+	SignalArray<SignalDispatchMatch> dispatchMatches;
 	size_t queueHead = 0;
 	size_t queueCount = 0;
-	std::optional<SignalSubscriptions> subscriptions;
+	SignalArray<SignalSubscriptionRecord> subscriptions;
 	size_t subscriptionCapacity = 0;
 	size_t activeSubscriptionCount = 0;
-	std::optional<SignalWaiters> waiters;
+	SignalArray<SignalWaiterRecord> waiters;
 	size_t waiterCapacity = 0;
 	size_t activeWaiterCount = 0;
 	size_t activePostOperations = 0;
@@ -246,8 +334,10 @@ struct SignalImpl {
 		cleanupStorage();
 		const Strata::Placement placement = newConfig.memory.allocation;
 
-		queue.emplace(Strata::Allocator<SignalQueuedEvent>{placement});
-		queue->resize(newConfig.queueSize);
+		if (!queue.allocate(newConfig.queueSize, placement)) {
+			cleanupStorage();
+			return false;
+		}
 
 		const size_t payloadBytes = newConfig.queueSize * newConfig.maxPayloadSize;
 		if (payloadBytes > 0) {
@@ -259,7 +349,7 @@ struct SignalImpl {
 		}
 		auto *queuePayload = queuePayloadStorage.data<uint8_t>();
 		for (size_t i = 0; i < newConfig.queueSize; ++i) {
-			(*queue)[i].payload = queuePayload != nullptr
+			queue[i].payload = queuePayload != nullptr
 			                       ? queuePayload + (i * newConfig.maxPayloadSize)
 			                       : nullptr;
 		}
@@ -272,17 +362,20 @@ struct SignalImpl {
 			}
 		}
 
-		dispatchMatches.emplace(Strata::Allocator<SignalDispatchMatch>{placement});
-		dispatchMatches->resize(newConfig.maxSubscriptions);
-		subscriptions.emplace(Strata::Allocator<SignalSubscriptionRecord>{placement});
-		subscriptions->resize(newConfig.maxSubscriptions);
+		if (!dispatchMatches.allocate(newConfig.maxSubscriptions, placement) ||
+		    !subscriptions.allocate(newConfig.maxSubscriptions, placement)) {
+			cleanupStorage();
+			return false;
+		}
 		subscriptionCapacity = newConfig.maxSubscriptions;
 
 		if (newConfig.maxWaiters > 0) {
-			waiters.emplace(Strata::Allocator<SignalWaiterRecord>{placement});
-			waiters->resize(newConfig.maxWaiters);
+			if (!waiters.allocate(newConfig.maxWaiters, placement)) {
+				cleanupStorage();
+				return false;
+			}
 			waiterCapacity = newConfig.maxWaiters;
-			for (auto &waiter : *waiters) {
+			for (auto &waiter : waiters) {
 				waiter.done = Strata::FreeRTOS::BinarySemaphore::create();
 				if (!waiter.done) {
 					cleanupStorage();
@@ -311,7 +404,7 @@ struct SignalImpl {
 
 	void enqueueLocked(SignalEventId eventId, size_t payloadSize, const void *payload) {
 		const size_t index = (queueHead + queueCount) % config.queueSize;
-		SignalQueuedEvent &slot = (*queue)[index];
+		SignalQueuedEvent &slot = queue[index];
 		slot.eventId = eventId;
 		slot.payloadSize = payloadSize;
 		slot.sequence = nextSequence++;
@@ -326,7 +419,7 @@ struct SignalImpl {
 			return false;
 		}
 
-		SignalQueuedEvent &slot = (*queue)[queueHead];
+		SignalQueuedEvent &slot = queue[queueHead];
 		event.eventId = slot.eventId;
 		event.payloadSize = slot.payloadSize;
 		event.sequence = slot.sequence;
@@ -351,7 +444,7 @@ struct SignalImpl {
 			return;
 		}
 		for (size_t i = 0; i < waiterCapacity; ++i) {
-			SignalWaiterRecord &waiter = (*waiters)[i];
+			SignalWaiterRecord &waiter = waiters[i];
 			if (!waiter.inUse || waiter.completed || waiter.eventId != eventId ||
 			    waiter.payloadSize != payloadSize) {
 				continue;
@@ -371,7 +464,7 @@ struct SignalImpl {
 			return;
 		}
 		for (size_t i = 0; i < waiterCapacity; ++i) {
-			SignalWaiterRecord &waiter = (*waiters)[i];
+			SignalWaiterRecord &waiter = waiters[i];
 			if (!waiter.inUse || waiter.completed) {
 				continue;
 			}
@@ -387,8 +480,8 @@ struct SignalImpl {
 			return nullptr;
 		}
 		for (size_t i = 0; i < waiterCapacity; ++i) {
-			if (!(*waiters)[i].inUse) {
-				return &(*waiters)[i];
+			if (!waiters[i].inUse) {
+				return &waiters[i];
 			}
 		}
 		return nullptr;
@@ -415,8 +508,8 @@ struct SignalImpl {
 			return nullptr;
 		}
 		for (size_t i = 0; i < subscriptionCapacity; ++i) {
-			if ((*subscriptions)[i].available()) {
-				return &(*subscriptions)[i];
+			if (subscriptions[i].available()) {
+				return &subscriptions[i];
 			}
 		}
 		return nullptr;
@@ -434,7 +527,7 @@ struct SignalImpl {
 		if (!subscriptions || index >= subscriptionCapacity) {
 			return;
 		}
-		SignalSubscriptionRecord &slot = (*subscriptions)[index];
+		SignalSubscriptionRecord &slot = subscriptions[index];
 		if (slot.dispatchRefs > 0) {
 			slot.dispatchRefs--;
 		}
@@ -449,7 +542,7 @@ struct SignalImpl {
 		}
 		size_t count = 0;
 		for (size_t i = 0; i < subscriptionCapacity && count < subscriptionCapacity; ++i) {
-			SignalSubscriptionRecord &subscription = (*subscriptions)[i];
+			SignalSubscriptionRecord &subscription = subscriptions[i];
 			if (!subscription.active || subscription.eventId != event.eventId ||
 			    subscription.payloadSize != event.payloadSize ||
 			    subscription.kind == SignalCallbackKind::None) {
@@ -460,9 +553,9 @@ struct SignalImpl {
 				continue;
 			}
 			subscription.dispatchRefs++;
-			(*dispatchMatches)[count].index = i;
-			(*dispatchMatches)[count].id = subscription.id;
-			(*dispatchMatches)[count].generation = subscription.generation;
+			dispatchMatches[count].index = i;
+			dispatchMatches[count].id = subscription.id;
+			dispatchMatches[count].generation = subscription.generation;
 			count++;
 		}
 		return count;
@@ -1351,18 +1444,22 @@ SignalDiag Signal::getDiagnostics() {
 	    _impl->task ? _impl->task.stackRegion() : Strata::Region::Unknown;
 	diag.allocationPlacement = _impl->config.memory.allocation;
 	diag.queueStorageRegion =
-	    _impl->queue && !_impl->queue->empty()
-	        ? Strata::regionOf(_impl->queue->data())
+	    !_impl->queue.empty()
+	        ? Strata::regionOf(_impl->queue.data())
 	        : Strata::Region::Unknown;
 	diag.queuePayloadRegion = _impl->queuePayloadStorage.region();
 	diag.dispatchPayloadRegion = _impl->dispatchPayload.region();
+	diag.dispatchMatchStorageRegion =
+	    !_impl->dispatchMatches.empty()
+	        ? Strata::regionOf(_impl->dispatchMatches.data())
+	        : Strata::Region::Unknown;
 	diag.subscriptionStorageRegion =
-	    _impl->subscriptions && !_impl->subscriptions->empty()
-	        ? Strata::regionOf(_impl->subscriptions->data())
+	    !_impl->subscriptions.empty()
+	        ? Strata::regionOf(_impl->subscriptions.data())
 	        : Strata::Region::Unknown;
 	diag.waiterStorageRegion =
-	    _impl->waiters && !_impl->waiters->empty()
-	        ? Strata::regionOf(_impl->waiters->data())
+	    !_impl->waiters.empty()
+	        ? Strata::regionOf(_impl->waiters.data())
 	        : Strata::Region::Unknown;
 	return diag;
 }
