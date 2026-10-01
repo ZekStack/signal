@@ -22,7 +22,7 @@
   "license": "MIT",
   "frameworks": "arduino",
   "dependencies": {
-    "Strata": "https://github.com/ZekStack/strata.git#3ce8be23fb8532df7b80b65127f385d953b8603e"
+    "Strata": "https://github.com/ZekStack/strata.git#v0.1.3"
   },
   "platforms": "espressif32",
   "build": {
