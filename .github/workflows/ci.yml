@@ -118,9 +118,6 @@ jobs:
   build-examples:
     runs-on: [self-hosted, zekstack-ci]
     needs: source-audit
-    env:
-      PLATFORMIO_CORE_DIR: ${{ runner.temp }}/signal-platformio
-      PIP_CACHE_DIR: ${{ runner.temp }}/signal-pip-cache
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -135,12 +132,17 @@ jobs:
         with:
           python-version: '3.13'
 
+      - name: Configure writable PIOArduino directories
+        run: |
+          echo "PLATFORMIO_CORE_DIR=${RUNNER_TEMP}/signal-platformio" >> "$GITHUB_ENV"
+          echo "PIP_CACHE_DIR=${RUNNER_TEMP}/signal-pip-cache" >> "$GITHUB_ENV"
+
       - name: Cache PIOArduino
         uses: actions/cache@v4
         with:
           path: |
-            ${{ env.PLATFORMIO_CORE_DIR }}
-            ${{ env.PIP_CACHE_DIR }}
+            ${{ runner.temp }}/signal-platformio
+            ${{ runner.temp }}/signal-pip-cache
           key: ${{ runner.os }}-pioarduino-${{ env.PIOARDUINO_VERSION }}-${{ env.PIOARDUINO_PLATFORM_VERSION }}-${{ hashFiles('**/library.json') }}
           restore-keys: |
             ${{ runner.os }}-pioarduino-${{ env.PIOARDUINO_VERSION }}-${{ env.PIOARDUINO_PLATFORM_VERSION }}-
@@ -170,10 +172,6 @@ jobs:
   arduino-cli:
     runs-on: [self-hosted, zekstack-ci]
     needs: [source-audit, build-examples]
-    env:
-      ARDUINO_DIRECTORIES_DATA: ${{ runner.temp }}/signal-arduino/data
-      ARDUINO_DIRECTORIES_DOWNLOADS: ${{ runner.temp }}/signal-arduino/downloads
-      ARDUINO_DIRECTORIES_USER: ${{ runner.temp }}/signal-arduino/user
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -196,12 +194,18 @@ jobs:
         with:
           version: ${{ env.ARDUINO_CLI_VERSION }}
 
+      - name: Configure writable Arduino directories
+        run: |
+          echo "ARDUINO_DIRECTORIES_DATA=${RUNNER_TEMP}/signal-arduino/data" >> "$GITHUB_ENV"
+          echo "ARDUINO_DIRECTORIES_DOWNLOADS=${RUNNER_TEMP}/signal-arduino/downloads" >> "$GITHUB_ENV"
+          echo "ARDUINO_DIRECTORIES_USER=${RUNNER_TEMP}/signal-arduino/user" >> "$GITHUB_ENV"
+
       - name: Cache Arduino CLI packages
         uses: actions/cache@v4
         with:
           path: |
-            ${{ env.ARDUINO_DIRECTORIES_DATA }}
-            ${{ env.ARDUINO_DIRECTORIES_DOWNLOADS }}
+            ${{ runner.temp }}/signal-arduino/data
+            ${{ runner.temp }}/signal-arduino/downloads
           key: ${{ runner.os }}-arduino-cli-${{ env.ARDUINO_CLI_VERSION }}-esp32-${{ env.ESP32_CORE_VERSION }}
           restore-keys: |
             ${{ runner.os }}-arduino-cli-${{ env.ARDUINO_CLI_VERSION }}-esp32-
