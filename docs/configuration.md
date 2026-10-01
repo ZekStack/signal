@@ -28,7 +28,7 @@ bus.init(config);
 
 `maxWaiters` limits tasks blocked in `waitFor()`. Set it to `0` to disable `waitFor()`; wait attempts then return `TooManyWaiters`.
 
-Signal allocates queue slots, payload storage, dispatch storage, subscription records, waiter records, waiter semaphores, and the queue-space counting semaphore during `init()`. Movable Signal-owned storage follows `memory.allocation`; FreeRTOS synchronization control blocks remain internal through Strata. A failed `init()` rolls back partial storage so the object can be retried with a different config.
+Signal allocates queue slots, payload storage, dispatch payload/match storage, subscription records, waiter records, waiter semaphores, and the queue-space counting semaphore during `init()`. Fixed-capacity arrays use non-throwing Strata-backed storage so placement failures are reported as `SignalStatus::OutOfMemory` and partial initialization is rolled back safely. Movable Signal-owned storage follows `memory.allocation`; FreeRTOS synchronization control blocks remain internal through Strata.
 
 The bounded core guarantee applies to post, dispatch, wait registration, waiter completion, unsubscribe, diagnostics, and raw callback subscription after successful `init()`. Capturing lambda and `std::function` subscriptions may allocate during `subscribe()`.
 
