@@ -121,4 +121,4 @@ Diagnostics include posted, processed, callback, dropped, rejected, queue usage,
 
 Use `processedEventCount` for dequeued events and `callbackInvokeCount` for actual callback calls. `dispatchedCount` remains as a compatibility alias for processed events.
 
-`stackHighWaterMarkBytes` is the minimum observed remaining stack space for the running Signal task. `taskStackPlacement` reports the requested Strata policy, while `taskStackRegion` reports the observed task-stack region. Queue, payload, subscription, and waiter storage expose their observed regions independently because `PreferExternal` may fall back per allocation.
+`stackHighWaterMarkBytes` is the minimum observed remaining stack space for the running Signal task. `taskStackPlacement` reports the requested Strata policy, while `taskStackRegion` reports the observed task-stack region. Queue, queue-payload, dispatch-payload, dispatch-match, subscription, and waiter storage expose their observed regions independently because `PreferExternal` may fall back per allocation.
