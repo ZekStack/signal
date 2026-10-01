@@ -118,6 +118,9 @@ jobs:
   build-examples:
     runs-on: [self-hosted, zekstack-ci]
     needs: source-audit
+    env:
+      PLATFORMIO_CORE_DIR: ${{ runner.temp }}/signal-platformio
+      PIP_CACHE_DIR: ${{ runner.temp }}/signal-pip-cache
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -136,8 +139,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ~/.platformio
-            ~/.cache/pip
+            ${{ env.PLATFORMIO_CORE_DIR }}
+            ${{ env.PIP_CACHE_DIR }}
           key: ${{ runner.os }}-pioarduino-${{ env.PIOARDUINO_VERSION }}-${{ env.PIOARDUINO_PLATFORM_VERSION }}-${{ hashFiles('**/library.json') }}
           restore-keys: |
             ${{ runner.os }}-pioarduino-${{ env.PIOARDUINO_VERSION }}-${{ env.PIOARDUINO_PLATFORM_VERSION }}-
@@ -167,6 +170,10 @@ jobs:
   arduino-cli:
     runs-on: [self-hosted, zekstack-ci]
     needs: [source-audit, build-examples]
+    env:
+      ARDUINO_DIRECTORIES_DATA: ${{ runner.temp }}/signal-arduino/data
+      ARDUINO_DIRECTORIES_DOWNLOADS: ${{ runner.temp }}/signal-arduino/downloads
+      ARDUINO_DIRECTORIES_USER: ${{ runner.temp }}/signal-arduino/user
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -193,8 +200,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ~/.arduino15
-            ~/.cache/arduino
+            ${{ env.ARDUINO_DIRECTORIES_DATA }}
+            ${{ env.ARDUINO_DIRECTORIES_DOWNLOADS }}
           key: ${{ runner.os }}-arduino-cli-${{ env.ARDUINO_CLI_VERSION }}-esp32-${{ env.ESP32_CORE_VERSION }}
           restore-keys: |
             ${{ runner.os }}-arduino-cli-${{ env.ARDUINO_CLI_VERSION }}-esp32-
@@ -207,7 +214,7 @@ jobs:
       - name: Add local libraries to sketchbook
         run: |
           set -e
-          SKETCHBOOK_DIR="${HOME}/Arduino"
+          SKETCHBOOK_DIR="${ARDUINO_DIRECTORIES_USER}"
           mkdir -p "$SKETCHBOOK_DIR/libraries/Signal"
           rsync -a --delete --exclude ".git" ./ "$SKETCHBOOK_DIR/libraries/Signal/"
           rm -rf "$SKETCHBOOK_DIR/libraries/Strata"
