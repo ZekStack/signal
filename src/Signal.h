@@ -103,6 +103,7 @@ struct SignalDiag {
 	Strata::Region queueStorageRegion = Strata::Region::Unknown;
 	Strata::Region queuePayloadRegion = Strata::Region::Unknown;
 	Strata::Region dispatchPayloadRegion = Strata::Region::Unknown;
+	Strata::Region dispatchMatchStorageRegion = Strata::Region::Unknown;
 	Strata::Region subscriptionStorageRegion = Strata::Region::Unknown;
 	Strata::Region waiterStorageRegion = Strata::Region::Unknown;
 };
