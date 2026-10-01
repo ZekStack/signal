@@ -231,7 +231,8 @@ class SignalArray {
 	}
 
 	T *end() noexcept {
-		return data() + size_;
+		auto *items = data();
+		return size_ == 0 ? items : items + size_;
 	}
 
   private:
@@ -614,7 +615,7 @@ struct SignalImpl {
 				}
 
 				for (size_t i = 0; i < matchCount; ++i) {
-					const SignalDispatchMatch match = (*impl->dispatchMatches)[i];
+					const SignalDispatchMatch match = impl->dispatchMatches[i];
 					bool invoked = false;
 					SignalCallbackKind kind = SignalCallbackKind::None;
 					SignalRawCallback rawCallback = nullptr;
@@ -630,7 +631,7 @@ struct SignalImpl {
 							}
 							continue;
 						}
-						SignalSubscriptionRecord &slot = (*impl->subscriptions)[match.index];
+						SignalSubscriptionRecord &slot = impl->subscriptions[match.index];
 						if (!slot.active || slot.id != match.id ||
 						    slot.generation != match.generation) {
 							impl->finishSubscriptionDispatchLocked(match.index);
@@ -658,7 +659,7 @@ struct SignalImpl {
 							if (lock && impl->subscriptions &&
 							    match.index < impl->subscriptionCapacity) {
 								SignalSubscriptionRecord &candidate =
-								    (*impl->subscriptions)[match.index];
+								    impl->subscriptions[match.index];
 								if (candidate.active && candidate.id == match.id &&
 								    candidate.generation == match.generation &&
 								    candidate.functionCallback) {
@@ -1179,7 +1180,7 @@ SignalResult Signal::unsubscribe(SignalSubscriptionId id) {
 	}
 
 	for (size_t i = 0; i < _impl->subscriptionCapacity; ++i) {
-		SignalSubscriptionRecord &slot = (*_impl->subscriptions)[i];
+		SignalSubscriptionRecord &slot = _impl->subscriptions[i];
 		if (!slot.active || slot.id != id) {
 			continue;
 		}
