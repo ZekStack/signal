@@ -113,6 +113,22 @@ void testInvalidMemoryPolicyIsRejected() {
 	CHECK(fake_freertos::taskCreateCount() == 0);
 }
 
+void testRequiredExternalStorageFailureCanBeRetried() {
+	fake_freertos::reset();
+	Signal bus;
+	SignalConfig config;
+	config.memory.allocation = Strata::Placement::RequireExternal;
+
+	SignalResult failed = bus.init(config);
+	CHECK(!failed);
+	CHECK(failed.status == SignalStatus::OutOfMemory);
+	CHECK(fake_freertos::taskCreateCount() == 0);
+
+	config.memory.allocation = Strata::Placement::Default;
+	CHECK(bus.init(config));
+	CHECK(bus.end(1000));
+}
+
 void testCallbackBlockingPostReturnsBusy() {
 	fake_freertos::reset();
 	Signal bus;
@@ -319,6 +335,7 @@ int main() {
 	testStrataTaskPlacement();
 	testRequireExternalTaskStackDoesNotFallback();
 	testInvalidMemoryPolicyIsRejected();
+	testRequiredExternalStorageFailureCanBeRetried();
 	testCallbackBlockingPostReturnsBusy();
 	testBlockedProducerDrainsBeforeShutdownCleanup();
 	testEndTimeoutCanBeCompletedLater();
