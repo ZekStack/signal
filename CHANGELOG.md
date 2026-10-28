@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.0
+
+- Pin the Strata dependency and all CI checkouts to the published v0.1.4 release.
+- Increment Signal's minor version to v0.3.0.
+
 ## 0.2.0
 
 - Migrate Signal-owned memory and FreeRTOS primitives to Strata.

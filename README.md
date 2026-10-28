@@ -1,5 +1,7 @@
 # Signal
 
+> Current version: **v0.3.0**; pinned Strata version: **v0.1.4**.
+
 Signal is an event bus and publish-subscribe library for ESP32.
 
 Signal helps Arduino ESP32 applications decouple modules with typed events, bounded queues, task-side callback dispatch, future-only waits, and runtime diagnostics. It is designed for products that need predictable event flow without direct dependencies between components.
@@ -159,7 +161,7 @@ For the full API, see [`docs/api.md`](docs/api.md).
 | PSRAM | Optional through Strata placement for task stacks and movable Signal-owned storage |
 | Dependencies | Strata |
 | Exceptions | Not used |
-| Status | `0.2.0` Strata migration |
+| Status | `0.3.0` Strata integration |
 
 ## License
 
