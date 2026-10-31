@@ -19,7 +19,7 @@ env:
   PIOARDUINO_PLATFORM_URL: https://github.com/pioarduino/platform-espressif32/releases/download/55.03.39/platform-espressif32.zip
   PIOARDUINO_PLATFORM_VERSION: 55.03.39
   PIOARDUINO_VERSION: 6.1.19
-  STRATA_REF: 5bc7a67c8a06487e9d9ecef265f6c24539c28441
+  STRATA_VERSION: v0.1.4
 
 jobs:
   source-audit:
@@ -87,8 +87,7 @@ jobs:
           set -e
           STRATA_DIR="${RUNNER_TEMP}/signal-strata"
           rm -rf "$STRATA_DIR"
-          git clone https://github.com/ZekStack/strata.git "$STRATA_DIR"
-          git -C "$STRATA_DIR" checkout "${STRATA_REF}"
+          git clone --depth 1 --branch "${STRATA_VERSION}" https://github.com/ZekStack/strata.git "$STRATA_DIR"
 
       - name: Build host runtime tests
         run: |
@@ -163,7 +162,7 @@ jobs:
                 --board ${{ matrix.board }} \
                 --lib="." \
                 --project-option "platform=${PIOARDUINO_PLATFORM_URL}" \
-                --project-option "lib_deps=https://github.com/ZekStack/strata.git#${STRATA_REF}" \
+                --project-option "lib_deps=https://github.com/ZekStack/strata.git#${STRATA_VERSION}" \
                 --project-option "build_unflags=-std=gnu++11" \
                 --project-option "build_flags=-std=gnu++20"
             fi
@@ -222,8 +221,7 @@ jobs:
           mkdir -p "$SKETCHBOOK_DIR/libraries/Signal"
           rsync -a --delete --exclude ".git" ./ "$SKETCHBOOK_DIR/libraries/Signal/"
           rm -rf "$SKETCHBOOK_DIR/libraries/Strata"
-          git clone https://github.com/ZekStack/strata.git "$SKETCHBOOK_DIR/libraries/Strata"
-          git -C "$SKETCHBOOK_DIR/libraries/Strata" checkout "${STRATA_REF}"
+          git clone --depth 1 --branch "${STRATA_VERSION}" https://github.com/ZekStack/strata.git "$SKETCHBOOK_DIR/libraries/Strata"
 
       - name: Build examples (${{ matrix.board.name }})
         env:
